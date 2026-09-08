@@ -50,6 +50,20 @@ The mechanism (message metadata, freshness rule, dedup key, atomic update shape,
 - **Resilience:** every socket / AMQP / MongoDB operation has a timeout; reconnect with backoff; graceful shutdown on SIGTERM drains in-flight work; malformed input is rejected and logged, never crashes a service.
 - **Tests:** unit tests co-located as `*.test.ts`; integration tests run against real MongoDB and RabbitMQ from Docker Compose, never mocks of the broker or the database. Scoped verify per package: `pnpm --filter @telemetry/<pkg> test && pnpm --filter @telemetry/<pkg> typecheck && pnpm --filter @telemetry/<pkg> lint`.
 
+## Writing and deciding (load-bearing)
+
+### Answers
+
+- Plain language: short sentences, everyday words, one idea per sentence. No filler, no hedging, no marketing tone, no restating the question.
+- Keep established technical terms — race condition, idempotency, at-least-once delivery, dead-letter queue, backpressure, prefetch. Renaming them into "simpler" words is worse than using them; if the reader may not know a term, explain it once in a sentence and then use it.
+- Say what was done, what was found and what is still open. Commands, code and numbers go into code blocks or tables, not into prose.
+
+### Decisions
+
+- **KISS wins.** The simplest solution that meets the assignment is the default. Add a layer, an abstraction, a library or an infrastructure component only when a requirement demands it.
+- **Name the trade-off.** When the simple solution gives something up compared with a more complex one — throughput, exactly-once effects, operational safety, future flexibility — say so explicitly in the spec, the plan or the README: what is lost, when it would start to matter, and what the upgrade path is. A trade-off that is not written down does not exist for the reviewer or for the technical discussion.
+- **No premature optimisation.** Optimise only against a bottleneck that is measured or clearly reasoned and named in a spec. Caching, batching, pooling, custom binary protocols or "for scale" indirection without such a reason do not go in; the reviewers treat them as over-engineering findings.
+
 ## Commands (root, once TODO step 1 lands)
 
 ```bash
