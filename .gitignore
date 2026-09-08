@@ -2,6 +2,7 @@
 node_modules/
 dist/
 coverage/
+*.tsbuildinfo
 
 # local environment (the committed template is .env.example)
 .env
