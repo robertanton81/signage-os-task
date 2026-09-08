@@ -30,7 +30,7 @@ Výstup: krátký návrhový dokument (později se stane základem README a podk
 ## 1. Založení projektu
 
 - [x] Inicializovat git (2026-09-08, větev `main`).
-- [ ] Vytvořit vzdálený repozitář (GitHub nebo GitLab) a pushnout.
+- [x] Vytvořit vzdálený repozitář (GitHub nebo GitLab) a pushnout (2026-09-08, https://github.com/robertanton81/signage-os-task, private).
 - [x] Založit pnpm monorepo se strukturou pro sdílený balíček a tři aplikace: emulátor, ingest, processing.
 - [x] Nastavit striktní TypeScript konfiguraci sdílenou napříč balíčky.
 - [x] Nastavit lint, formátování a testovací runner na úrovni monorepa.
