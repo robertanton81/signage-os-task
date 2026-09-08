@@ -29,13 +29,14 @@ Výstup: krátký návrhový dokument (později se stane základem README a podk
 
 ## 1. Založení projektu
 
-- [ ] Inicializovat git a vytvořit vzdálený repozitář (GitHub nebo GitLab).
-- [ ] Založit pnpm monorepo se strukturou pro sdílený balíček a tři aplikace: emulátor, ingest, processing.
-- [ ] Nastavit striktní TypeScript konfiguraci sdílenou napříč balíčky.
-- [ ] Nastavit lint, formátování a testovací runner na úrovni monorepa.
-- [ ] Nastavit rootové skripty: build, typecheck, lint, test.
-- [ ] Přidat `.gitignore` a `.env.example` (bez hodnot).
-- [ ] První commit. Od začátku udržovat smysluplnou commit historii – malé, popisné commity po každém logickém kroku.
+- [x] Inicializovat git (2026-09-08, větev `main`).
+- [ ] Vytvořit vzdálený repozitář (GitHub nebo GitLab) a pushnout.
+- [x] Založit pnpm monorepo se strukturou pro sdílený balíček a tři aplikace: emulátor, ingest, processing.
+- [x] Nastavit striktní TypeScript konfiguraci sdílenou napříč balíčky.
+- [x] Nastavit lint, formátování a testovací runner na úrovni monorepa.
+- [x] Nastavit rootové skripty: build, typecheck, lint, test.
+- [x] Přidat `.gitignore` a `.env.example` (bez hodnot).
+- [x] První commit. Od začátku udržovat smysluplnou commit historii – malé, popisné commity po každém logickém kroku.
 
 ## 2. Sdílený balíček (kontrakt zpráv a domény)
 
