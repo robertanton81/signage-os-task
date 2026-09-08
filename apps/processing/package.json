@@ -1,0 +1,16 @@
+{
+  "name": "@telemetry/processing",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc -b",
+    "lint": "eslint .",
+    "test": "vitest run --root ../.. apps/processing",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@telemetry/shared": "workspace:*"
+  }
+}
