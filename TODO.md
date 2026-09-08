@@ -4,6 +4,7 @@ Pořadí kroků pro splnění zadání v `main-spec/Domácí úkol BE.pdf`.
 Záměrně bez implementačních detailů – konkrétní knihovny, datový model a formát zpráv se rozhodnou až v příslušném kroku.
 
 Proč toto pořadí:
+
 - Návrhová rozhodnutí jdou první, protože z nich vychází kontrakt zpráv, obě služby, testy, README i technická diskuze.
 - Sdílený balíček vzniká před službami, aby všechny mluvily stejným jazykem.
 - Docker Compose je hotový před integračními testy, protože jim poskytuje infrastrukturu.

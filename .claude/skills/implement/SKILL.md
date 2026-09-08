@@ -179,7 +179,7 @@ This reviewer answers ONE question: does the code match what the plan specified?
 
 Launch **two reviewer subagents in parallel** in a single message (separate `Agent` tool calls in the same response):
 
-1. **code-reviewer** (`subagent_type: "code-reviewer"`, `model: "sonnet"`) — conventions, resilience, invariants, security, error handling, test *existence/coverage*, everything except plan adherence (already verified in Stage 1) and test *meaningfulness* (delegated to the test-quality-reviewer below).
+1. **code-reviewer** (`subagent_type: "code-reviewer"`, `model: "sonnet"`) — conventions, resilience, invariants, security, error handling, test _existence/coverage_, everything except plan adherence (already verified in Stage 1) and test _meaningfulness_ (delegated to the test-quality-reviewer below).
 
 2. **test-quality-reviewer** (`subagent_type: "test-quality-reviewer"`, `model: "sonnet"`) — runs whenever the diff touches **any** test file (`*.test.ts`, `*.spec.ts`, anything under `test/` or `tests/`) **or** when source files with logic were added/modified without paired tests. This reviewer rejects tautology tests, mock-only tests, framework tests, sleep-driven integration tests, skipped/todo tests, and any other form that always passes regardless of SUT behavior. **This stage is non-skippable** — every implementation that touches tests is audited for meaningfulness, not just existence.
 

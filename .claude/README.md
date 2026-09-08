@@ -8,18 +8,18 @@ Každý krok má vstupní dokument, výstupní dokument a adversariální review
 
 ## Obsah
 
-| Cesta | Co to je |
-| --- | --- |
-| `../CLAUDE.md` | Kontext projektu pro Claude: stack, invarianty ze zadání, konvence, příkazy, workflow. |
-| `../TODO.md` | Seřazený seznam kroků; první neodškrtnutá položka je vždy další akce. |
-| `skills/design-spec` | Prozkoumání problému, 2–3 přístupy s trade-offs, spec do `docs/specs/`. Spec musí explicitně odpovědět na otázky ze zadání (metadata zpráv, novost stavu, atomicita, paralelismus). |
-| `skills/plan` | Revidovaný implementační plán do `docs/plans/`: úkoly, verify příkazy, kritéria ověření. Každý úkol, který zapisuje stav, pojmenuje invariant a test, který ho dokazuje. |
-| `skills/implement` | Provedení plánu po úkolech, dvoustupňové review (shoda s plánem → kvalita kódu + kvalita testů), atomické commity. |
-| `skills/verify` | Ověření hotové implementace proti kritériím z plánu a proti stálým požadavkům zadání, s důkazy. |
-| `skills/test-review` | Audit testů mimo `/implement`. |
-| `agents/*-reviewer.md` | Read-only review agenti. `test-quality-reviewer` odmítá tautologické, mock-only a sleep-driven testy. |
-| `hooks/session-orient.sh` | Při startu session vypíše další neodškrtnutý krok z `TODO.md` a varuje před necommitnutými změnami. |
-| `settings.json` | Allowlist příkazů (pnpm, docker compose, git jen pro čtení) a registrace hooku. |
+| Cesta                     | Co to je                                                                                                                                                                            |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `../CLAUDE.md`            | Kontext projektu pro Claude: stack, invarianty ze zadání, konvence, příkazy, workflow.                                                                                              |
+| `../TODO.md`              | Seřazený seznam kroků; první neodškrtnutá položka je vždy další akce.                                                                                                               |
+| `skills/design-spec`      | Prozkoumání problému, 2–3 přístupy s trade-offs, spec do `docs/specs/`. Spec musí explicitně odpovědět na otázky ze zadání (metadata zpráv, novost stavu, atomicita, paralelismus). |
+| `skills/plan`             | Revidovaný implementační plán do `docs/plans/`: úkoly, verify příkazy, kritéria ověření. Každý úkol, který zapisuje stav, pojmenuje invariant a test, který ho dokazuje.            |
+| `skills/implement`        | Provedení plánu po úkolech, dvoustupňové review (shoda s plánem → kvalita kódu + kvalita testů), atomické commity.                                                                  |
+| `skills/verify`           | Ověření hotové implementace proti kritériím z plánu a proti stálým požadavkům zadání, s důkazy.                                                                                     |
+| `skills/test-review`      | Audit testů mimo `/implement`.                                                                                                                                                      |
+| `agents/*-reviewer.md`    | Read-only review agenti. `test-quality-reviewer` odmítá tautologické, mock-only a sleep-driven testy.                                                                               |
+| `hooks/session-orient.sh` | Při startu session vypíše další neodškrtnutý krok z `TODO.md` a varuje před necommitnutými změnami.                                                                                 |
+| `settings.json`           | Allowlist příkazů (pnpm, docker compose, git jen pro čtení) a registrace hooku.                                                                                                     |
 
 ## Odkud to je
 

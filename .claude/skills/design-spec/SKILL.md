@@ -170,13 +170,14 @@ The backbrief is three to five sentences, structured as three elements:
 3. **Latitude.** Where `/plan` and `/implement` will exercise judgment without coming back to ask. Name these explicitly so the user can reclaim control on specific dimensions before the plan is written (e.g. "module decomposition inside `apps/processing/src/`", "test file naming", "log field names").
 
 **Rules:**
+
 - Synthesize in your own words. If the backbrief reads like the spec rearranged, it hasn't demonstrated understanding — it's a transcript.
 - Three to five sentences total. Longer means the spec is doing the synthesis poorly.
 - Do not introduce new requirements. Backbrief is read-only on the spec.
 
 ## Phase 9: Present to User
 
-> "Spec written to `docs/specs/<path>`. Backbrief follows. Please review the backbrief — if any of the *critical constraints* are wrong or any *latitude* item should be locked down, say so before we move to `/plan`."
+> "Spec written to `docs/specs/<path>`. Backbrief follows. Please review the backbrief — if any of the _critical constraints_ are wrong or any _latitude_ item should be locked down, say so before we move to `/plan`."
 
 Then print the backbrief inline. Wait for approval. If changes requested, update and re-run review (Phase 7).
 

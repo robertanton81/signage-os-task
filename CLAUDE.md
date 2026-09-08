@@ -64,13 +64,13 @@ docker compose up -d --scale ingest=2 --scale processing=3   # horizontal scalin
 
 ### Skills (`.claude/skills/`) — invoke with `/<name>`
 
-| Skill | When | Output |
-| --- | --- | --- |
-| `/design-spec` | Approach not yet decided — one question at a time, 2–3 approaches with trade-offs, spec. | `docs/specs/YYYY-MM-DD-<topic>-design.md` |
-| `/plan` | Approach is clear — reviewed implementation plan with tasks, verify commands, verification criteria. | `docs/plans/YYYY-MM-DD-<topic>-plan.md` |
-| `/implement` | Plan approved — per-task execution (inline or fresh subagent), two-stage review, atomic commits. | Code + commits |
-| `/verify` | After `/implement` — run every verification criterion, report pass/fail with evidence. | Verification report |
-| `/test-review` | After writing tests outside `/implement` — audit for meaningfulness. | `test-quality-reviewer` report |
+| Skill          | When                                                                                                 | Output                                    |
+| -------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| `/design-spec` | Approach not yet decided — one question at a time, 2–3 approaches with trade-offs, spec.             | `docs/specs/YYYY-MM-DD-<topic>-design.md` |
+| `/plan`        | Approach is clear — reviewed implementation plan with tasks, verify commands, verification criteria. | `docs/plans/YYYY-MM-DD-<topic>-plan.md`   |
+| `/implement`   | Plan approved — per-task execution (inline or fresh subagent), two-stage review, atomic commits.     | Code + commits                            |
+| `/verify`      | After `/implement` — run every verification criterion, report pass/fail with evidence.               | Verification report                       |
+| `/test-review` | After writing tests outside `/implement` — audit for meaningfulness.                                 | `test-quality-reviewer` report            |
 
 **Default loop:** `/design-spec` → `/plan` → `/implement` → `/verify`. Skip `/design-spec` only when the approach is already locked in a spec. Each flow skill ends with a fixed hand-off block (output path, next step, session-clear signal), and `/design-spec` and `/plan` end with a **Backbrief** (end-state, critical constraints, latitude) so the delegation to the next step is visible.
 
@@ -78,13 +78,13 @@ User-scope skills used alongside, not part of this repo: `/debug` (root-cause-fi
 
 ### Review agents (`.claude/agents/`) — spawned by the skills, not user-invoked
 
-| Agent | Model | Spawned by | Role |
-| --- | --- | --- | --- |
-| `design-reviewer` | sonnet | `/design-spec` | Adversarial review of the spec against the assignment's questions and invariants before `/plan` |
-| `plan-reviewer` | sonnet | `/plan` | Adversarial review of the plan before `/implement` |
-| `spec-compliance-reviewer` | haiku | `/implement` Stage 1 | Binary "does the code match the plan task?" |
-| `code-reviewer` | sonnet | `/implement` Stage 2 | Code quality, resilience, invariants, security, test *existence* |
-| `test-quality-reviewer` | sonnet | `/implement` Stage 2, `/test-review` | Test *meaningfulness*: rejects tautology, mock-only, framework and sleep-driven tests |
+| Agent                      | Model  | Spawned by                           | Role                                                                                            |
+| -------------------------- | ------ | ------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `design-reviewer`          | sonnet | `/design-spec`                       | Adversarial review of the spec against the assignment's questions and invariants before `/plan` |
+| `plan-reviewer`            | sonnet | `/plan`                              | Adversarial review of the plan before `/implement`                                              |
+| `spec-compliance-reviewer` | haiku  | `/implement` Stage 1                 | Binary "does the code match the plan task?"                                                     |
+| `code-reviewer`            | sonnet | `/implement` Stage 2                 | Code quality, resilience, invariants, security, test _existence_                                |
+| `test-quality-reviewer`    | sonnet | `/implement` Stage 2, `/test-review` | Test _meaningfulness_: rejects tautology, mock-only, framework and sleep-driven tests           |
 
 Findings are `BLOCKING` (must fix) or `SUGGESTION`. BLOCKING findings loop the parent skill back, max 2 iterations. Reviewers have no doc tools: an unverifiable API claim is flagged `needs docs: <library>` and the parent skill resolves it with `/find-docs`.
 

@@ -39,7 +39,7 @@ Before reviewing, read:
 You receive:
 
 - A list of changed test files (`*.test.ts`, `*.spec.ts`, anything under `test/` or `tests/`)
-- A list of changed source files (so you can tell what each test is *supposed* to be exercising)
+- A list of changed source files (so you can tell what each test is _supposed_ to be exercising)
 - A `git diff` of the change
 
 If no test files were touched but source files with logic were added/modified, report a BLOCKING finding: tests are missing for the new logic.
@@ -90,7 +90,7 @@ const result = await repo.findOne();
 expect(result).toEqual({ deviceId: 'd1' });
 ```
 
-A test of `processor.handle(message)` that mocks every collaborator and only checks the mock's return value through the processor is the same anti-pattern. The processor must do *something* (decide, branch, map, order) and that something must be what's asserted.
+A test of `processor.handle(message)` that mocks every collaborator and only checks the mock's return value through the processor is the same anti-pattern. The processor must do _something_ (decide, branch, map, order) and that something must be what's asserted.
 
 **What NOT to mock** (mocking these turns a test into a tautology):
 
@@ -177,7 +177,9 @@ expect(processor).toBeTruthy();
 
 ```ts
 // BLOCKING
-it.skip('handles concurrent writes', () => { /* ... */ });
+it.skip('handles concurrent writes', () => {
+  /* ... */
+});
 it.todo('backpressure');
 ```
 
@@ -253,18 +255,18 @@ An integration test that checks the processor's local variable rather than the d
 
 Use this to judge whether the **right thing** is being tested.
 
-| Layer | What a meaningful test asserts |
-|---|---|
-| Message schema (`packages/shared`) | Concrete invalid payloads reject with a specific issue path (missing device id, negative sequence, unknown event type, oversized field); concrete valid payloads of every event type parse to the expected typed value. Not "schema is defined." |
-| Emulator event generator | Under a fixed seed and fake clock the generator emits the expected sequence: monotonic sequence numbers per device, the configured event mix and rate. Fault-injection modes emit duplicates / out-of-order / reconnects exactly as configured. |
-| Ingest framing | A message split across TCP chunks reassembles into one message; two messages in one chunk yield two; a malformed or oversized frame is rejected, logged, and the connection stays open. |
-| Ingest → RabbitMQ (integration) | A message accepted by ingest is consumable from the real broker with its metadata (headers / routing key / payload) intact; an invalid message never reaches the broker. |
-| Processing consumer | Ack happens only after the write succeeded (crash the write, assert the message is still on the broker); handler failure leads to the nack / requeue / dead-letter outcome the spec prescribes; order within one device is preserved under the configured prefetch. |
+| Layer                                      | What a meaningful test asserts                                                                                                                                                                                                                                                                                                       |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Message schema (`packages/shared`)         | Concrete invalid payloads reject with a specific issue path (missing device id, negative sequence, unknown event type, oversized field); concrete valid payloads of every event type parse to the expected typed value. Not "schema is defined."                                                                                     |
+| Emulator event generator                   | Under a fixed seed and fake clock the generator emits the expected sequence: monotonic sequence numbers per device, the configured event mix and rate. Fault-injection modes emit duplicates / out-of-order / reconnects exactly as configured.                                                                                      |
+| Ingest framing                             | A message split across TCP chunks reassembles into one message; two messages in one chunk yield two; a malformed or oversized frame is rejected, logged, and the connection stays open.                                                                                                                                              |
+| Ingest → RabbitMQ (integration)            | A message accepted by ingest is consumable from the real broker with its metadata (headers / routing key / payload) intact; an invalid message never reaches the broker.                                                                                                                                                             |
+| Processing consumer                        | Ack happens only after the write succeeded (crash the write, assert the message is still on the broker); handler failure leads to the nack / requeue / dead-letter outcome the spec prescribes; order within one device is preserved under the configured prefetch.                                                                  |
 | Dedup + state update (MongoDB integration) | The same message twice yields one event document, one counter increment, one alert. An older message after a newer one leaves the state unchanged. Two processing instances handling the same device concurrently end in the state the logical order dictates. The unique index rejects the duplicate write with the expected error. |
-| Graceful shutdown | SIGTERM with an in-flight message finishes that message (document written, ack sent) before the process exits; no new deliveries are accepted after the signal. |
-| Configuration | A missing or invalid env var fails startup with an error naming the variable. |
-| Logging | A processed message produces a log event carrying the device id and message identity; no `console.*` in service code. |
-| End-to-end (Compose) | N emulated devices for T seconds → the current state in MongoDB equals each device's last event, and event counts reconcile with what the emulator sent. |
+| Graceful shutdown                          | SIGTERM with an in-flight message finishes that message (document written, ack sent) before the process exits; no new deliveries are accepted after the signal.                                                                                                                                                                      |
+| Configuration                              | A missing or invalid env var fails startup with an error naming the variable.                                                                                                                                                                                                                                                        |
+| Logging                                    | A processed message produces a log event carrying the device id and message identity; no `console.*` in service code.                                                                                                                                                                                                                |
+| End-to-end (Compose)                       | N emulated devices for T seconds → the current state in MongoDB equals each device's last event, and event counts reconcile with what the emulator sent.                                                                                                                                                                             |
 
 ## Implicit Contracts to Watch For
 

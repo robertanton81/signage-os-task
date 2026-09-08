@@ -24,16 +24,16 @@ Tests passing is not the same as "done." This skill checks whether what was buil
 
 ### Standing assignment criteria
 
-| Applies when the plan touches | Criterion | How to verify |
-| --- | --- | --- |
-| device state | The same message delivered twice yields one event document, one counter increment, one alert | integration test run + inspect the collection |
-| device state | An older message arriving after a newer one leaves the state unchanged | integration test run |
-| processing | Several processing instances over one queue end in the state the logical order dictates | `docker compose up -d --scale processing=3`, run the emulator, reconcile per device |
-| ingest | Several ingest instances accept devices concurrently; no device depends on a specific instance | `docker compose up -d --scale ingest=2`, run the emulator, all devices' events reach MongoDB |
-| ingest or processing | Malformed input is rejected and logged; the service and the connection survive | send a bad frame / bad payload, check logs and health |
-| ingest or processing | SIGTERM drains in-flight work before exit | `docker compose stop <service>` mid-run, no lost or half-written message |
-| any service | Readiness endpoint reflects broker/database connectivity | `curl -s localhost:<port>/health` before and after stopping a dependency |
-| emulator | Device count and event rate are configurable via env | run with two settings, observe the difference |
+| Applies when the plan touches | Criterion                                                                                      | How to verify                                                                                |
+| ----------------------------- | ---------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| device state                  | The same message delivered twice yields one event document, one counter increment, one alert   | integration test run + inspect the collection                                                |
+| device state                  | An older message arriving after a newer one leaves the state unchanged                         | integration test run                                                                         |
+| processing                    | Several processing instances over one queue end in the state the logical order dictates        | `docker compose up -d --scale processing=3`, run the emulator, reconcile per device          |
+| ingest                        | Several ingest instances accept devices concurrently; no device depends on a specific instance | `docker compose up -d --scale ingest=2`, run the emulator, all devices' events reach MongoDB |
+| ingest or processing          | Malformed input is rejected and logged; the service and the connection survive                 | send a bad frame / bad payload, check logs and health                                        |
+| ingest or processing          | SIGTERM drains in-flight work before exit                                                      | `docker compose stop <service>` mid-run, no lost or half-written message                     |
+| any service                   | Readiness endpoint reflects broker/database connectivity                                       | `curl -s localhost:<port>/health` before and after stopping a dependency                     |
+| emulator                      | Device count and event rate are configurable via env                                           | run with two settings, observe the difference                                                |
 
 ## Phase 2: Run Checks
 

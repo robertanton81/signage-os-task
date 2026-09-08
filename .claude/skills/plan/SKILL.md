@@ -96,12 +96,12 @@ You are a non-biased technical planner. Your job is to find the best approach, n
 
 For each requirement, define what "done" looks like beyond "tests pass":
 
-| #   | Criterion                                                                        | How to verify                                                         |
-| --- | -------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
-| 1   | A message published twice yields one event document and one counter increment   | integration test `<path>` against the Compose RabbitMQ + MongoDB      |
-| 2   | An older message arriving after a newer one leaves the device state unchanged    | integration test `<path>`                                             |
-| 3   | Three processing instances over one queue end in the same state as one instance  | `docker compose up -d --scale processing=3` + reconciliation script   |
-| 4   | Ingest readiness endpoint returns 200 once the broker channel is open            | `curl -s localhost:<port>/health`                                     |
+| #   | Criterion                                                                       | How to verify                                                       |
+| --- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| 1   | A message published twice yields one event document and one counter increment   | integration test `<path>` against the Compose RabbitMQ + MongoDB    |
+| 2   | An older message arriving after a newer one leaves the device state unchanged   | integration test `<path>`                                           |
+| 3   | Three processing instances over one queue end in the same state as one instance | `docker compose up -d --scale processing=3` + reconciliation script |
+| 4   | Ingest readiness endpoint returns 200 once the broker channel is open           | `curl -s localhost:<port>/health`                                   |
 
 ## Test Plan
 
@@ -163,6 +163,7 @@ The backbrief is three to five sentences, structured as three elements:
 3. **Latitude.** Where `/implement` subagents will exercise judgment without coming back to ask. Name these explicitly so the user can reclaim control before implementation begins (e.g. "exact test file naming", "internal helper decomposition inside the listed task files", "log field names", "how to split a task into 1-2 commits if the implementation suggests it").
 
 **Rules:**
+
 - Synthesize in your own words. A backbrief that paraphrases the Goal/Approach lines is a restatement, not a synthesis.
 - Three to five sentences total. Longer means the plan structure is doing the synthesis poorly — fix the plan, not the backbrief.
 - Do not introduce new requirements. The backbrief is read-only on the plan.
