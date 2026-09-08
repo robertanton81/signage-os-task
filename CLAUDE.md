@@ -13,7 +13,7 @@ Take-home assignment (`main-spec/Domácí úkol BE.pdf`): a scalable pipeline th
 
 **Fixed by the assignment (do not re-litigate):** Node.js, strictly typed TypeScript, pnpm monorepo, RabbitMQ, MongoDB, Docker Compose (development only), long-lived socket connections between devices and ingest, automated tests with at least part of them integration tests against real MongoDB and RabbitMQ instances.
 
-**To be decided and recorded in `docs/specs/` (TODO steps 0–2):** socket protocol and framing, validation library, AMQP client, MongoDB driver, test runner, logger, config loading. Once a library is chosen, pin its version and cite the docs it was verified against. Never pick or use a library from memory: run `/find-docs` (Ref → context7 → web) for the version being pinned.
+**To be decided and recorded in `docs/specs/` (TODO steps 0–2):** socket protocol and framing, validation library, AMQP client, MongoDB driver, test runner, logger, config loading. Once a library is chosen, pin its version and cite the docs it was verified against. Never pick or use a library from memory: look its documentation up for the version being pinned — `/find-docs` where that user-scope skill is installed, otherwise directly (Ref MCP → Context7 MCP → web fetch). Wherever a skill or agent in this repo says `/find-docs`, it means this lookup.
 
 ## Repo layout (target — created in TODO step 1)
 
@@ -54,6 +54,7 @@ The mechanism (message metadata, freshness rule, dedup key, atomic update shape,
 
 ### Answers
 
+- Reply in the language the user writes in. Code, comments, commits, specs and plans stay in English.
 - Plain language: short sentences, everyday words, one idea per sentence. No filler, no hedging, no marketing tone, no restating the question.
 - Keep established technical terms — race condition, idempotency, at-least-once delivery, dead-letter queue, backpressure, prefetch. Renaming them into "simpler" words is worse than using them; if the reader may not know a term, explain it once in a sentence and then use it.
 - Say what was done, what was found and what is still open. Commands, code and numbers go into code blocks or tables, not into prose.
@@ -63,6 +64,48 @@ The mechanism (message metadata, freshness rule, dedup key, atomic update shape,
 - **KISS wins.** The simplest solution that meets the assignment is the default. Add a layer, an abstraction, a library or an infrastructure component only when a requirement demands it.
 - **Name the trade-off.** When the simple solution gives something up compared with a more complex one — throughput, exactly-once effects, operational safety, future flexibility — say so explicitly in the spec, the plan or the README: what is lost, when it would start to matter, and what the upgrade path is. A trade-off that is not written down does not exist for the reviewer or for the technical discussion.
 - **No premature optimisation.** Optimise only against a bottleneck that is measured or clearly reasoned and named in a spec. Caching, batching, pooling, custom binary protocols or "for scale" indirection without such a reason do not go in; the reviewers treat them as over-engineering findings.
+
+## Working rules (portable — they do not depend on anyone's personal Claude configuration)
+
+These rules travel with the repository so that Claude behaves the same for every user who opens it. They are copied from the author's personal setup on purpose; if a personal configuration says otherwise, the rules here win inside this repository.
+
+### End-of-turn report (hard rule)
+
+The last message of every turn that did work ends with this block and nothing after it. Plain language, one line per item, each line a full sentence that says what and where. Never bury a status inside a paragraph.
+
+**Done** — only what actually landed _and_ was verified, with the proof on the line (a commit sha, a test count, a file path). Partial work does not go here; it goes under To do with what is missing.
+**To do** — what remains, in the order it should happen, each line naming who moves it next (Claude next turn, a later plan, a named skill) and what it waits on.
+**Your actions** — everything only the user can do: console steps, merges, decisions, physical steps. Imperative phrasing, with the exact input or link needed. If there are none, write `none`.
+
+- Keep it short: at most six lines per section; lead-in above the block at most two sentences; no other headers in the report.
+- An item is done or it is not. "Mostly done", "should work", "pending confirmation" are To do items.
+- When a skill prescribes its own hand-off block (Output / Next step / Session hygiene), render its content inside these three sections, not in addition to them.
+- Mid-turn progress notes stay short and never repeat the block; the block appears once, at the end.
+
+### Secrets
+
+- A secret value never appears in the conversation, on a command line, or in a log. Inspect files that hold secrets with redaction only (key names, never values).
+- Dev credentials live only in `docker-compose.yml` and `.env.example` (empty values). If a secret does leak into the chat, say so at once and treat it as compromised.
+
+### Verification after changes
+
+Run the scoped verify of every touched package, and the full pre-flight (`pnpm lint && pnpm typecheck && pnpm test`) before reporting anything as done. When imports or types change across packages, check the consumers as well.
+
+### Debugging
+
+Before proposing any fix: read the full error output and stack trace, trace the path from the entry point to the failure, identify the exact line or condition, and explain the root cause. Only then apply the minimal fix, with a test that reproduces the bug first. Never jump to the first plausible fix; if other tests break, revert and re-analyse.
+
+### Adding a dependency
+
+Before proposing or installing any npm package: check maintenance (last publish, maintainers, open issues), adoption (weekly downloads) and known advisories, verify the current API in its documentation, and record the findings with the pinned version in the spec or plan before the package lands.
+
+### Walking the user through steps
+
+When a procedure needs the user's own actions (console steps, pushes, decisions), present one step at a time and wait for confirmation before the next one. Never dump the whole remaining list as instructions to execute.
+
+### Honest correction over agreement
+
+Treat the user's stated view as open to correction. Say plainly where it is right, partly right or wrong, with reasoning and sources; steelman the other side before critiquing it; flag confirmation bias or anchoring when you see it. Praise for directness is not a reason to soften the next answer.
 
 ## Commands (root, once TODO step 1 lands)
 
@@ -88,7 +131,7 @@ docker compose up -d --scale ingest=2 --scale processing=3   # horizontal scalin
 
 **Default loop:** `/design-spec` → `/plan` → `/implement` → `/verify`. Skip `/design-spec` only when the approach is already locked in a spec. Each flow skill ends with a fixed hand-off block (output path, next step, session-clear signal), and `/design-spec` and `/plan` end with a **Backbrief** (end-state, critical constraints, latitude) so the delegation to the next step is visible.
 
-User-scope skills used alongside, not part of this repo: `/debug` (root-cause-first bug fixing), `/find-docs` (current library docs), `/grill-me` (stress-testing a design before it is written down).
+User-scope skills the author uses alongside, not part of this repo and not required: `/debug` (root-cause-first bug fixing — the Debugging rule below is the fallback), `/find-docs` (current library docs — see Stack for the fallback), `/grill-me` (stress-testing a design before it is written down).
 
 ### Review agents (`.claude/agents/`) — spawned by the skills, not user-invoked
 
