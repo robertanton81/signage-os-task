@@ -1,0 +1,14 @@
+packages:
+  - apps/*
+  - packages/*
+
+# One exact version per tool for the whole workspace (docs/specs/2026-09-08-monorepo-tooling-design.md).
+catalog:
+  '@eslint/js': 10.0.1
+  '@types/node': 24.13.3
+  eslint: 10.10.0
+  eslint-config-prettier: 10.1.8
+  prettier: 3.9.6
+  typescript: 6.0.3
+  typescript-eslint: 8.70.0
+  vitest: 4.1.11

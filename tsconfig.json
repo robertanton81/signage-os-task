@@ -1,0 +1,9 @@
+{
+  "files": [],
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./apps/emulator" },
+    { "path": "./apps/ingest" },
+    { "path": "./apps/processing" }
+  ]
+}
