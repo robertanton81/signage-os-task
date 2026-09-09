@@ -17,3 +17,7 @@ coverage/
 
 # personal Claude Code settings (the shared ones live in .claude/settings.json)
 .claude/settings.local.json
+
+# local scratch: anything that must not reach the submission
+# (study notes, throwaway drafts, downloaded reference material)
+.local/
