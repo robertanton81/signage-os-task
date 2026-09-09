@@ -31,4 +31,4 @@ Skills a agenti jsou převzaté z mého staršího TypeScript projektu a zbaven�
 TODO.md krok  →  /design-spec (spec)  →  /plan (plán)  →  /implement (kód + review + commity)  →  /verify (důkazy)
 ```
 
-Commit historie je běžná týmová: malé imperativní commity, každý s patičkou `Co-Authored-By`, aby bylo vidět, co vzniklo s asistencí.
+Commit historie je běžná týmová: malé imperativní commity s imperativním předmětem. Commit message popisuje změnu, nic jiného — bez patičky s atribucí nástroje.

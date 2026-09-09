@@ -70,7 +70,7 @@ When in doubt, default inline. Re-dispatch only when the inline pass actually su
 - Mark the task in progress before starting; completed after the commit lands.
 - Stage explicitly named files only — never `git add -A` or `git add .`.
 - Same scoped verify command as the plan specifies.
-- Atomic commit per task with the imperative subject + Co-Authored-By footer.
+- Atomic commit per task with an imperative subject and no assistant attribution.
 
 ### Subagent Mode (when dispatch is justified by the rule above)
 
@@ -103,7 +103,7 @@ Agent(
   - Shared structured logger, never `console.*`; every message log line carries device id + message identity
   - Every socket / AMQP / MongoDB operation has a timeout; malformed input is rejected and logged, never crashes
   - Unit tests co-located as `*.test.ts`; broker/DB paths get integration tests against the Compose services, never mocks of the client
-  - Commit message: imperative, no Conventional Commits prefix, `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` footer
+  - Commit message: imperative, no Conventional Commits prefix, no assistant attribution — no `Co-Authored-By` footer and no mention of Claude or any AI tool
 - Scoped verify command (per-package): `pnpm --filter @telemetry/<pkg> test && pnpm --filter @telemetry/<pkg> typecheck && pnpm --filter @telemetry/<pkg> lint`
 - Instruction to commit atomically when done and to report `DONE` / `DONE_WITH_CONCERNS` / `NEEDS_CONTEXT` / `BLOCKED`
 
@@ -141,7 +141,7 @@ Execute sequentially in the main context. For each task:
      && pnpm --filter @telemetry/<package> typecheck \
      && pnpm --filter @telemetry/<package> lint
    ```
-6. Create an atomic commit (imperative subject, Co-Authored-By footer).
+6. Create an atomic commit (imperative subject, no assistant attribution).
 7. Mark the task completed.
 
 ### Debugging Protocol

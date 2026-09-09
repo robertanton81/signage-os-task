@@ -88,7 +88,7 @@ You are a non-biased technical planner. Your job is to find the best approach, n
 - [ ] Verify test fails
 - [ ] Implement minimal code to pass
 - [ ] Verify test passes
-- [ ] Commit — imperative subject, Co-Authored-By footer
+- [ ] Commit — imperative subject, no assistant attribution
 
 ### Task N: ...
 
@@ -126,7 +126,7 @@ If interrupted mid-implementation, resume by:
 - Every step actionable by an engineer with zero context
 - Each task tagged `[mechanical]` or `[integration]` for model selection
 - Each task has a scoped verify command (per-package, not full monorepo)
-- Each task ends with an atomic commit (imperative subject, no Conventional Commits prefix, Co-Authored-By footer)
+- Each task ends with an atomic commit (imperative subject, no Conventional Commits prefix, no assistant attribution)
 - Bite-sized steps: write test → verify fail → implement → verify pass → commit
 - Every task that writes device state, consumes the queue, or publishes to it names the invariant it upholds and the test that proves it (duplicate case and out-of-order case at minimum)
 - Every path that talks to RabbitMQ or MongoDB gets an integration test against the real service, not a mocked client

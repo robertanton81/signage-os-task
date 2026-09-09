@@ -44,7 +44,8 @@ The mechanism (message metadata, freshness rule, dedup key, atomic update shape,
 - **pnpm only** — never `npm install` / `yarn`. `workspace:*` for cross-package deps; every workspace package has `"private": true`; frozen lockfile in Docker builds.
 - **Strict TypeScript everywhere.** `strict: true`; no `any`, no non-null assertions without a comment explaining why; types derived from the validation schema, not redeclared.
 - **Language:** code, comments, commit messages, specs and plans in English. `README.md` in Czech (the assignment's language).
-- **Commit style:** imperative subject, no Conventional Commits prefix, small atomic commits (the commit history is part of the assessment). Footer: `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`.
+- **Commit style:** imperative subject, no Conventional Commits prefix, small atomic commits (the commit history is part of the assessment). No assistant attribution in commit messages — no `Co-Authored-By` footer, no mention of Claude or any AI tool. The message describes the change, nothing else.
+- **Local scratch:** anything that must not reach the submission goes in `.local/` — study notes, throwaway drafts, downloaded reference material. The whole directory is gitignored, so individual items are never added to `.gitignore` one by one.
 - **Logging:** the shared structured logger, never `console.*` in service code; every log line about a message carries the device id and the message identity.
 - **Configuration:** env vars validated at startup; a missing or invalid variable fails fast with a message naming it. Dev credentials live only in `docker-compose.yml` / `.env.example`. No secrets in code or logs.
 - **Resilience:** every socket / AMQP / MongoDB operation has a timeout; reconnect with backoff; graceful shutdown on SIGTERM drains in-flight work; malformed input is rejected and logged, never crashes a service.

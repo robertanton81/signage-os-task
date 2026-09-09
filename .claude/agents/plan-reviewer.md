@@ -54,7 +54,7 @@ Check against `CLAUDE.md` "Stack":
 - Dependency direction `apps/*` → `packages/*`; no business decisions in `packages/shared`.
 - Strict TypeScript; types inferred from the shared schema.
 - Shared structured logger; env validated at startup; dev credentials only in Compose / `.env.example`.
-- Commit style: imperative, no Conventional Commits prefix, `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>` footer.
+- Commit style: imperative, no Conventional Commits prefix, no assistant attribution footer. Flag any commit message mentioning Claude or an AI tool.
 
 ### Architecture Alignment
 
