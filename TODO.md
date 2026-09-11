@@ -18,14 +18,16 @@ Legenda: `[ ]` nehotovo · `[x]` hotovo
 
 Výstup: krátký návrhový dokument (později se stane základem README a podkladů pro diskuzi).
 
-- [ ] Definovat metadata telemetrické zprávy: identita zařízení, jednoznačná identita zprávy pro deduplikaci, informace pro určení pořadí a novosti.
-- [ ] Definovat, co znamená „aktuální stav zařízení“ a podle čeho se rozhoduje, zda je příchozí zpráva novější než uložený stav.
-- [ ] Rozhodnout strategii deduplikace: jak poznat opakovanou zprávu a jak zajistit, že nezpůsobí duplicitní business efekt (čítače, alerty, stav).
-- [ ] Rozhodnout, jak zajistit pořadí zpracování v rámci jednoho zařízení a zároveň paralelní zpracování různých zařízení napříč instancemi processing služby.
-- [ ] Identifikovat operace, které musí být atomické, a rozhodnout, jak bude atomicita zaručena.
-- [ ] Rozhodnout chování při selhání: výpadek instance, nedoručitelná zpráva, restart. Vědomě zvolit doručovací sémantiku a popsat její důsledky.
-- [ ] Rozhodnout, jak se zařízení rozdělují mezi více instancí ingest služby (bezstavovost ingestu).
-- [ ] Založit průběžný seznam kompromisů a věcí „s více času jinak“ – doplňovat v každém dalším kroku.
+Rozhodnuto 2026-09-11 ve specu `docs/specs/2026-09-11-telemetry-consistency-design.md` (čísla odkazují na jeho Decisions Log).
+
+- [x] Definovat metadata telemetrické zprávy: identita zařízení, jednoznačná identita zprávy pro deduplikaci, informace pro určení pořadí a novosti. (rozhodnutí 1–5)
+- [x] Definovat, co znamená „aktuální stav zařízení“ a podle čeho se rozhoduje, zda je příchozí zpráva novější než uložený stav. (rozhodnutí 6–8)
+- [x] Rozhodnout strategii deduplikace: jak poznat opakovanou zprávu a jak zajistit, že nezpůsobí duplicitní business efekt (čítače, alerty, stav). (rozhodnutí 9, 16, 17)
+- [x] Rozhodnout, jak zajistit pořadí zpracování v rámci jednoho zařízení a zároveň paralelní zpracování různých zařízení napříč instancemi processing služby. (rozhodnutí 11, 19)
+- [x] Identifikovat operace, které musí být atomické, a rozhodnout, jak bude atomicita zaručena. (rozhodnutí 10, 20)
+- [x] Rozhodnout chování při selhání: výpadek instance, nedoručitelná zpráva, restart. Vědomě zvolit doručovací sémantiku a popsat její důsledky. (rozhodnutí 12–14, 18, tabulka selhání)
+- [x] Rozhodnout, jak se zařízení rozdělují mezi více instancí ingest služby (bezstavovost ingestu). (rozhodnutí 15)
+- [x] Založit průběžný seznam kompromisů a věcí „s více času jinak“ – doplňovat v každém dalším kroku. (sekce „Trade-offs (running list)“, řádky T1–T10)
 
 ## 1. Založení projektu
 
