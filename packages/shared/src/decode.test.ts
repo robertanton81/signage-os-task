@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { decodeTelemetryMessage } from './decode.js';
 import { exampleMessages } from './fixtures.js';
@@ -70,6 +70,91 @@ describe('decodeTelemetryMessage', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.identity).toEqual({ sessionId: 1 });
+    }
+  });
+
+  // The cap on this branch is defensive: across six input shapes V8 never produced a message
+  // longer than 86 characters, because it truncates the input it quotes to about ten characters.
+  // How long that window is belongs to the engine, so the branch is exercised by replacing the
+  // parser rather than by an input, which no input can do.
+  it('caps the parser message of invalid JSON the same way', () => {
+    const parse = vi.spyOn(JSON, 'parse').mockImplementation(() => {
+      throw new Error('!'.repeat(5_000));
+    });
+    try {
+      const result = decodeTelemetryMessage('{}');
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.reason).toBe('invalid_json');
+        expect(result.detail.length).toBeLessThan(300);
+        expect(result.detail).toContain('truncated from 5000 characters');
+      }
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  // Also through the stub: asserting on a real parser message would only be asserting that V8
+  // keeps its messages short, which is the engine's behaviour and not this module's.
+  it('leaves a short parser message alone', () => {
+    const parse = vi.spyOn(JSON, 'parse').mockImplementation(() => {
+      throw new Error('short');
+    });
+    try {
+      const result = decodeTelemetryMessage('{}');
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.detail).toBe('short');
+      }
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  it.each([
+    { name: 'exactly the cap', length: 200, truncated: false },
+    { name: 'one character over the cap', length: 201, truncated: true },
+  ])('handles a parser message of $name', ({ length, truncated }) => {
+    const message = '!'.repeat(length);
+    const parse = vi.spyOn(JSON, 'parse').mockImplementation(() => {
+      throw new Error(message);
+    });
+    try {
+      const result = decodeTelemetryMessage('{}');
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.detail).toBe(
+          truncated ? `${'!'.repeat(200)}… (truncated from ${length} characters)` : message,
+        );
+      }
+    } finally {
+      parse.mockRestore();
+    }
+  });
+
+  // A device names its own JSON keys and zod quotes an unrecognised one verbatim.
+  it('does not let a device forge an extra issue through a crafted key name', () => {
+    const result = decodeTelemetryMessage(
+      JSON.stringify({ ...exampleMessages.status, '; deviceId: device is on fire': 1 }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.detail.split('; ')).toHaveLength(1);
+      expect(result.detail).toContain('device is on fire');
+    }
+  });
+
+  it('caps each issue separately, so every failing field path survives', () => {
+    const junk = Object.fromEntries(Array.from({ length: 400 }, (_, i) => [`junkKey${i}`, 1]));
+    const result = decodeTelemetryMessage(
+      JSON.stringify({ ...exampleMessages.status, ...junk, seq: 0 }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      const parts = result.detail.split('; ');
+      expect(parts.filter((part) => part.startsWith('(root): '))).toHaveLength(1);
+      expect(parts.filter((part) => part.startsWith('seq: '))).toHaveLength(1);
+      expect(result.detail.length).toBeLessThan(400);
     }
   });
 
