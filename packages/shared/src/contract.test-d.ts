@@ -2,11 +2,13 @@
 // the whole src tree); the Vitest unit project only runs *.test.ts, so nothing here executes.
 import { expectTypeOf } from 'vitest';
 
+import { EVENTS_IDENTITY_INDEX_SPEC } from './collections.js';
 import type {
   AlertDocument,
   DeviceStateDocument,
   DeviceStateSection,
   EventDocument,
+  LastEvent,
   SectionMeta,
 } from './documents.js';
 import type {
@@ -15,16 +17,26 @@ import type {
   TelemetryEventType,
   TelemetryMessage,
 } from './message.js';
+import {
+  DEAD_LETTER_EXCHANGE_OPTIONS,
+  DEAD_LETTER_QUEUE_OPTIONS,
+  TELEMETRY_EXCHANGE_OPTIONS,
+  TELEMETRY_QUEUE_OPTIONS,
+} from './topology.js';
 
 // The event-type list and the schema union agree.
 expectTypeOf<TelemetryMessage['type']>().toEqualTypeOf<TelemetryEventType>();
 
-// Every event type has exactly one optional section in the state document, and nothing else.
-expectTypeOf<Exclude<keyof DeviceStateDocument, '_id'>>().toEqualTypeOf<TelemetryEventType>();
+// Every event type has exactly one optional section in the state document; the only other
+// fields are the id and the device-wide watermark.
+expectTypeOf<
+  Exclude<keyof DeviceStateDocument, '_id' | 'lastEvent'>
+>().toEqualTypeOf<TelemetryEventType>();
 // Each section is pinned to its OWN event type: the keyof check above sees only key names, so
 // without this a swap (status holding a diagnostic section) would compile cleanly.
 expectTypeOf<DeviceStateDocument>().toEqualTypeOf<{
   _id: string;
+  lastEvent?: LastEvent;
   status?: DeviceStateSection<'status'>;
   metrics?: DeviceStateSection<'metrics'>;
   counters?: DeviceStateSection<'counters'>;
@@ -72,3 +84,12 @@ expectTypeOf<AlertDocument>().toEqualTypeOf<{
   occurredAt: number;
   createdAt: number;
 }>();
+
+// The one index option invariant 2 depends on, and the declaration options both services must
+// agree on, are literally `true` in the shared definitions. A mismatch on redeclaration is a 406
+// PRECONDITION_FAILED for the exchanges and the queues, and an index conflict for `unique`.
+expectTypeOf(EVENTS_IDENTITY_INDEX_SPEC.unique).toEqualTypeOf<true>();
+expectTypeOf(TELEMETRY_EXCHANGE_OPTIONS.durable).toEqualTypeOf<true>();
+expectTypeOf(DEAD_LETTER_EXCHANGE_OPTIONS.durable).toEqualTypeOf<true>();
+expectTypeOf(TELEMETRY_QUEUE_OPTIONS.durable).toEqualTypeOf<true>();
+expectTypeOf(DEAD_LETTER_QUEUE_OPTIONS.durable).toEqualTypeOf<true>();

@@ -35,3 +35,21 @@ export const DEAD_LETTER_QUEUE_ARGUMENTS = {
 export const RECEIVED_AT_HEADER = 'x-received-at';
 
 export const MESSAGE_CONTENT_TYPE = 'application/json';
+
+/**
+ * `durable` and the arguments are the attributes either service sets; both are checked at
+ * redeclaration, so both services pass these objects unchanged to `assertExchange` and
+ * `assertQueue`. `internal`, `autoDelete` and `exclusive` are deliberately left at amqplib's
+ * default of false, which is what this design wants — that is safe only while both callers import
+ * these constants instead of building their own options.
+ */
+export const TELEMETRY_EXCHANGE_OPTIONS = { durable: true } as const;
+export const DEAD_LETTER_EXCHANGE_OPTIONS = { durable: true } as const;
+export const TELEMETRY_QUEUE_OPTIONS = {
+  durable: true,
+  arguments: TELEMETRY_QUEUE_ARGUMENTS,
+} as const;
+export const DEAD_LETTER_QUEUE_OPTIONS = {
+  durable: true,
+  arguments: DEAD_LETTER_QUEUE_ARGUMENTS,
+} as const;

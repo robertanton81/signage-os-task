@@ -17,11 +17,26 @@ export type SectionMeta = {
 export type DeviceStateSection<T extends TelemetryEventType> = SectionMeta & PayloadOf<T>;
 
 /**
+ * Device-wide watermark: the newest unique event of any type (consistency spec, decision 27).
+ * Advanced by the same conditional pipeline as the sections, only when the event is newer, so a
+ * stale message still changes nothing. It is the "as of" marker of the document, the input for
+ * liveness (`now - receivedAt`) and the reference for gap detection (`seq` skipped a value).
+ */
+export type LastEvent = {
+  sessionId: number;
+  seq: number;
+  type: TelemetryEventType;
+  receivedAt: number;
+};
+
+/**
  * One document per device in `device_state`; `_id` is the device id. A section is absent until
- * the first event of its type arrives. There is deliberately no top-level `updatedAt`.
+ * the first event of its type arrives. There is deliberately no unconditional `updatedAt`: every
+ * field, `lastEvent` included, moves only when an event is newer than what is stored.
  */
 export type DeviceStateDocument = {
   _id: string;
+  lastEvent?: LastEvent;
   status?: DeviceStateSection<'status'>;
   metrics?: DeviceStateSection<'metrics'>;
   counters?: DeviceStateSection<'counters'>;
