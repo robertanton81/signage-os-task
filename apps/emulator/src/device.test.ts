@@ -4,7 +4,7 @@ import {
   type Logger,
   type TelemetryMessage,
 } from '@telemetry/shared';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadEmulatorConfig, type EmulatorConfig } from './config.js';
 import { DeviceClient } from './device.js';
@@ -148,6 +148,43 @@ describe('DeviceClient', () => {
     await device.stop();
     expect(device.isConnected).toBe(false);
     expect(device.connectionState).toBe('stopped');
+  });
+
+  it('queues nothing after the farewell, however long the drain takes', async () => {
+    // The regression test for the stopped flag. `prepareShutdown` enqueues, and every enqueue
+    // re-arms the heartbeat timer — so without the guard a slow drain gives that timer time to
+    // fire and put a `status` on the wire after the `offline` farewell. The fleet-level test
+    // cannot catch this: there the drain finishes in under a millisecond, so the timer never
+    // gets the chance. Here the wait is explicit and covers several heartbeat periods.
+    const target = await sink();
+    const device = client(configFor(target.port, { EMULATOR_HEARTBEAT_MS: '20' }));
+    device.start();
+    await target.waitForLines(5);
+
+    device.stopGenerating();
+    device.prepareShutdown();
+    const queuedAtShutdown = device.outboxLength;
+
+    // Five heartbeat periods of real time. A live timer would fire repeatedly in this window.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Nothing new may have been queued while we waited. This is the assertion that bites: a live
+    // heartbeat timer would have added several messages behind the farewell.
+    expect(device.outboxLength).toBe(queuedAtShutdown);
+    device.pump();
+
+    // Wait for the farewell to actually reach the sink — `waitForLines(n)` would be satisfied by
+    // the lines that arrived before shutdown and would read the wrong "last" message.
+    await vi.waitFor(() => {
+      const offline = parse(target.lines()).filter(
+        (m) => m.type === 'status' && m.payload.state === 'offline',
+      );
+      expect(offline).toHaveLength(1);
+    });
+    expect(parse(target.lines()).at(-1)).toMatchObject({
+      type: 'status',
+      payload: { state: 'offline' },
+    });
   });
 
   it('counts what it generated and what it wrote', async () => {

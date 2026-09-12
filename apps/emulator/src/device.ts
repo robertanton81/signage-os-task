@@ -74,6 +74,10 @@ export class DeviceClient {
     });
   }
 
+  get deviceId(): string {
+    return this.#deviceId;
+  }
+
   get outboxLength(): number {
     return this.#outbox.length;
   }
