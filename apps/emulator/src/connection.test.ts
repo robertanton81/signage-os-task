@@ -120,6 +120,104 @@ describe('DeviceConnection', () => {
     expect((JSON.parse(lines[0] ?? '{}') as TelemetryMessage).seq).toBe(1);
   });
 
+  it('reports backpressure and resumes writing after the peer reads again', async () => {
+    // The one thing worth testing here, and the reason these tests use a real socket at all: a
+    // mocked socket would only test the mock's idea of when `write()` returns false.
+    const target = await sink();
+    let writable = false;
+    const connection = connect(target.port, () => {
+      writable = true;
+    });
+    connection.start();
+    await vi.waitFor(() => {
+      expect(connection.isConnected).toBe(true);
+    });
+
+    target.pauseConnections();
+
+    // Write until the kernel and the socket's own buffer are full. 64 KiB at a time so this
+    // terminates quickly; the cap stops a runaway if backpressure never appears.
+    const chunk = Buffer.alloc(64 * 1024, 0x61);
+    let refusedAfter = 0;
+    for (let i = 1; i <= 500; i += 1) {
+      if (!connection.write(chunk)) {
+        refusedAfter = i;
+        break;
+      }
+    }
+
+    expect(refusedAfter).toBeGreaterThan(0);
+    const paused = connection.state;
+    expect(paused.name).toBe('connected');
+    // The state must record it, or the pump would keep writing into a full buffer.
+    expect(paused.name === 'connected' && paused.writable).toBe(false);
+    // A further write is refused rather than queued behind the backlog.
+    expect(connection.write(chunk)).toBe(false);
+
+    writable = false;
+    target.resumeConnections();
+
+    // `'drain'` must fire and re-open the pump; without it the device would stay stuck forever.
+    await vi.waitFor(
+      () => {
+        expect(writable).toBe(true);
+      },
+      { timeout: 5_000 },
+    );
+    const resumed = connection.state;
+    expect(resumed.name === 'connected' && resumed.writable).toBe(true);
+  });
+
+  it('abandons a connect attempt that never completes, instead of stalling forever', async () => {
+    // 198.51.100.0/24 is TEST-NET-2 (RFC 5737): reserved for documentation and not routed, so the
+    // SYN is dropped rather than refused. That is the black-hole case — no 'error', no 'close' —
+    // which without a connect timeout leaves the device in `connecting` for the OS SYN budget.
+    // The timeout is overridden low so the test does not wait ten seconds for it.
+    const connection = new DeviceConnection({
+      deviceId: 'dev-0001',
+      hosts: [{ host: '198.51.100.1', port: 9 }],
+      random: createRandom(3),
+      logger: silentLogger(),
+      onWritable: () => undefined,
+      connectTimeoutMs: 150,
+    });
+    open.connections.push(connection);
+    connection.start();
+
+    // `backoff` specifically. Accepting `resolving` too would make this pass instantly and for
+    // the wrong reason: `start()` sets `resolving` synchronously, so `vi.waitFor` would return on
+    // its first call, before the connect has had any chance to time out.
+    await vi.waitFor(
+      () => {
+        expect(connection.state.name).toBe('backoff');
+      },
+      { timeout: 4_000 },
+    );
+  });
+
+  it('closes within its own deadline even when the peer never responds', async () => {
+    const connection = new DeviceConnection({
+      deviceId: 'dev-0001',
+      hosts: [{ host: '198.51.100.1', port: 9 }],
+      random: createRandom(3),
+      logger: silentLogger(),
+      onWritable: () => undefined,
+      connectTimeoutMs: 30_000,
+    });
+    open.connections.push(connection);
+    connection.start();
+    // Let it reach `connecting` against the black hole, then stop while it is still there.
+    await vi.waitFor(() => {
+      expect(connection.state.name).toBe('connecting');
+    });
+
+    const startedAt = Date.now();
+    await connection.stop();
+    // Bounded by CLOSE_TIMEOUT_MS, not by the 30 s connect timeout above.
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    expect(connection.state.name).toBe('stopped');
+  });
+
   it('goes to backoff when the target refuses the connection, and never throws', async () => {
     // Take a port, then release it: connecting there is refused rather than hanging.
     const temporary = await startTestSink();
@@ -128,8 +226,11 @@ describe('DeviceConnection', () => {
 
     const connection = connect(port);
     connection.start();
+    // `backoff` and nothing else. The earlier version of this test accepted `resolving` and
+    // `connecting` as well, which `start()` reaches synchronously — so it returned on the first
+    // poll and would have passed identically with the backoff transition deleted.
     await vi.waitFor(() => {
-      expect(['backoff', 'resolving', 'connecting']).toContain(connection.state.name);
+      expect(connection.state.name).toBe('backoff');
     });
   });
 });

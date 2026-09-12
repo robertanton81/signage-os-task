@@ -10,6 +10,21 @@ import type { Random } from './random.js';
 /** How long a socket may be idle before TCP keepalive probes start. */
 const KEEP_ALIVE_DELAY_MS = 30_000;
 
+/**
+ * How long a connect attempt may sit with no activity before it is abandoned.
+ *
+ * Without this a black-holed address — packets dropped rather than refused, which is what a
+ * firewall rule, a stale NAT entry or an ingest replica mid-restart looks like — leaves the socket
+ * in `connecting` for the operating system's own SYN retry budget, commonly 75 seconds and
+ * sometimes far longer. Neither `error` nor `close` fires in that window, so the device cannot
+ * reach `backoff` and cannot retry: "retry forever" would silently become "stall forever" for
+ * exactly the failure this design exists to survive.
+ */
+const CONNECT_TIMEOUT_MS = 10_000;
+
+/** Hard cap on waiting for a socket to close during shutdown, before it is destroyed outright. */
+const CLOSE_TIMEOUT_MS = 1_000;
+
 export type ConnectionState =
   | { name: 'idle' }
   | { name: 'resolving' }
@@ -25,6 +40,8 @@ export type DeviceConnectionOptions = {
   logger: Logger;
   /** Called when writing may proceed: on connect, and on every drain. */
   onWritable: () => void;
+  /** Defaults to CONNECT_TIMEOUT_MS; only the tests shorten or lengthen it. */
+  connectTimeoutMs?: number;
 };
 
 /**
@@ -39,6 +56,7 @@ export class DeviceConnection {
   readonly #random: Random;
   readonly #logger: Logger;
   readonly #onWritable: () => void;
+  readonly #connectTimeoutMs: number;
   #state: ConnectionState = { name: 'idle' };
 
   constructor(options: DeviceConnectionOptions) {
@@ -47,6 +65,7 @@ export class DeviceConnection {
     this.#random = options.random;
     this.#logger = options.logger;
     this.#onWritable = options.onWritable;
+    this.#connectTimeoutMs = options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
   }
 
   get state(): ConnectionState {
@@ -103,9 +122,22 @@ export class DeviceConnection {
       case 'connecting':
       case 'connected':
         return new Promise<void>((resolve) => {
-          state.socket.removeAllListeners('close');
-          state.socket.once('close', () => resolve());
-          state.socket.end(() => state.socket.destroy());
+          // `end()` is polite — it flushes what is buffered and sends FIN — but on a socket that
+          // is still connecting to an unresponsive peer it can wait as long as the connect does.
+          // The whole drain is supposed to be bounded, so the wait is raced against a hard cap
+          // that destroys the socket outright. Without it `Fleet.shutdown()` step 5 has no
+          // deadline of its own and could outlive SHUTDOWN_TIMEOUT_MS.
+          const socket = state.socket;
+          socket.removeAllListeners('close');
+          const timer = setTimeout(() => {
+            socket.destroy();
+          }, CLOSE_TIMEOUT_MS);
+          timer.unref();
+          socket.once('close', () => {
+            clearTimeout(timer);
+            resolve();
+          });
+          socket.end();
         });
       case 'idle':
       case 'stopped':
@@ -157,6 +189,18 @@ export class DeviceConnection {
     const socket = net.connect({ host: target.host, port: target.port });
     socket.setNoDelay(true);
     socket.setKeepAlive(true, KEEP_ALIVE_DELAY_MS);
+    // An inactivity timeout, which during the connect phase is a connect timeout. `'timeout'`
+    // does NOT sever the connection on its own — the socket must be destroyed explicitly.
+    socket.setTimeout(this.#connectTimeoutMs);
+    socket.once('timeout', () => {
+      this.#logger.warn(
+        { deviceId: this.#deviceId, address: target.host, port: target.port },
+        'connect attempt timed out',
+      );
+      // `destroy()` produces `'close'`, which is what routes this into backoff like any other
+      // failure — so a black-holed address is retried instead of stalling the device.
+      socket.destroy();
+    });
     this.#state = { name: 'connecting', socket };
     // A connection that succeeded resets the backoff: the next failure is a fresh problem, not a
     // continuation of the old one. Without this, a device that finally connects on attempt 8 and
@@ -169,6 +213,10 @@ export class DeviceConnection {
         return;
       }
       connected = true;
+      // Established: hand liveness over to TCP keepalive. Leaving the inactivity timeout armed
+      // would close a perfectly healthy connection whenever a device had nothing to say for ten
+      // seconds, which the default heartbeat of thirty seconds makes routine.
+      socket.setTimeout(0);
       this.#state = { name: 'connected', socket, writable: true };
       this.#logger.info(
         { deviceId: this.#deviceId, address: target.host, port: target.port },

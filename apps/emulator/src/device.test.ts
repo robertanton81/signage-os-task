@@ -11,6 +11,21 @@ import { DeviceClient } from './device.js';
 import { createRandom } from './random.js';
 import { startTestSink, type TestSink } from './test-sink.js';
 
+/** A logger whose lines the test can read, for the assertions about the drop warning. */
+function collectingLogger(): { logger: Logger; lines: () => string[] } {
+  const lines: string[] = [];
+  const logger = createLogger({
+    service: 'test',
+    level: 'trace',
+    destination: {
+      write: (line: string) => {
+        lines.push(line);
+      },
+    },
+  });
+  return { logger, lines: () => [...lines] };
+}
+
 function silentLogger(): Logger {
   return createLogger({
     service: 'test',
@@ -187,13 +202,115 @@ describe('DeviceClient', () => {
     });
   });
 
+  it('restart chaos opens a strictly greater session and starts seq again at 1', async () => {
+    const target = await sink();
+    const device = client(
+      configFor(target.port, {
+        EMULATOR_CHAOS: 'restart',
+        EMULATOR_CHAOS_INTERVAL_MS: '1000',
+      }),
+    );
+    device.start();
+    const before = parse(await target.waitForLines(5));
+    const firstSession = before[0]?.sessionId ?? 0;
+    expect(firstSession).toBeGreaterThan(0);
+
+    // The interval is drawn in [0.5x, 1.5x], so 1000 ms means a restart within 1.5 s.
+    await vi.waitFor(
+      () => {
+        const sessions = new Set(parse(target.lines()).map((m) => m.sessionId));
+        expect(sessions.size).toBeGreaterThan(1);
+      },
+      { timeout: 4_000 },
+    );
+
+    const all = parse(target.lines());
+    const sessions = [...new Set(all.map((m) => m.sessionId))].sort((a, b) => a - b);
+    const [, second] = sessions;
+    expect(second).toBeGreaterThan(firstSession);
+
+    // A power cycle: the new session starts its own order-key space at 1, and it opens with
+    // `status: online` — which only happens if `session.restart()` really ran.
+    const newSessionMessages = all.filter((m) => m.sessionId === second);
+    expect(newSessionMessages[0]).toMatchObject({
+      seq: 1,
+      type: 'status',
+      payload: { state: 'online' },
+    });
+    expect(device.stats.reconnects).toBeGreaterThan(0);
+  });
+
+  it('disconnect chaos keeps the session and continues seq across the drop', async () => {
+    const target = await sink();
+    const device = client(
+      configFor(target.port, {
+        EMULATOR_CHAOS: 'disconnect',
+        EMULATOR_CHAOS_INTERVAL_MS: '1000',
+      }),
+    );
+    device.start();
+    await target.waitForLines(5);
+
+    await vi.waitFor(
+      () => {
+        expect(target.connectionCount()).toBeGreaterThanOrEqual(2);
+      },
+      { timeout: 4_000 },
+    );
+    const after = parse(await target.waitForLines(15));
+
+    // Transport loss, not device loss: one session throughout, and seq never restarts. Resetting
+    // seq here would reuse the identity, which is the bug the whole design exists to prevent.
+    expect(new Set(after.map((m) => m.sessionId)).size).toBe(1);
+    expect(after.map((m) => m.seq)).toEqual(after.map((_unused, i) => i + 1));
+    expect(device.stats.reconnects).toBeGreaterThan(0);
+  });
+
+  it('drops from a full outbox, counts it and names the dropped message', async () => {
+    // Nothing can drain: the port was bound then released, so every connect is refused and the
+    // outbox fills. A tiny cap makes that happen within a few ticks.
+    const temporary = await startTestSink();
+    const { port } = temporary;
+    await temporary.close();
+
+    const { logger, lines } = collectingLogger();
+    const device = new DeviceClient({
+      deviceId: 'dev-0001',
+      config: loadEmulatorConfig({
+        INGEST_HOSTS: `127.0.0.1:${String(port)}`,
+        EMULATOR_EVENT_INTERVAL_MS: '10',
+        EMULATOR_OUTBOX_MAX: '2',
+      }),
+      random: createRandom(5),
+      logger,
+    });
+    open.clients.push(device);
+    device.start();
+
+    await vi.waitFor(
+      () => {
+        expect(device.stats.dropped).toBeGreaterThan(0);
+      },
+      { timeout: 4_000 },
+    );
+
+    expect(device.outboxLength).toBeLessThanOrEqual(2);
+    expect(device.stats.written).toBe(0);
+    const warnings = lines().filter((line) => line.includes('outbox full'));
+    expect(warnings.length).toBeGreaterThan(0);
+    // The log must carry the identity of what was lost, or the loss is invisible in practice.
+    expect(warnings[0]).toMatch(/"dropped":"dev-0001:\d+:\d+"/);
+  });
+
   it('counts what it generated and what it wrote', async () => {
     const target = await sink();
     const device = client(configFor(target.port));
     device.start();
     await target.waitForLines(10);
 
-    expect(device.stats.generated).toBeGreaterThan(0);
+    // Anchored to what was actually written: `toBeGreaterThan(0)` would pass with the counter
+    // stuck at 1 while ten lines went out.
+    expect(device.stats.generated).toBeGreaterThanOrEqual(device.stats.written);
     expect(device.stats.written).toBeGreaterThanOrEqual(10);
     expect(device.stats.dropped).toBe(0);
   });

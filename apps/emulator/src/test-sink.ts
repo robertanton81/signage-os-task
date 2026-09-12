@@ -21,6 +21,10 @@ export type TestSink = {
   connectionCount(): number;
   /** Destroys every open connection but keeps listening, so the client must reconnect. */
   dropConnections(): void;
+  /** Stops reading, so the writer's buffers fill and `socket.write()` starts returning false. */
+  pauseConnections(): void;
+  /** Resumes reading, which lets the writer drain and fires its `'drain'` event. */
+  resumeConnections(): void;
   close(): Promise<void>;
 };
 
@@ -28,11 +32,15 @@ export async function startTestSink(): Promise<TestSink> {
   const lines: string[] = [];
   const sockets = new Set<net.Socket>();
   let accepted = 0;
+  let paused = false;
   let notify: (() => void) | null = null;
 
   const server = net.createServer((socket) => {
     accepted += 1;
     sockets.add(socket);
+    // A connection accepted while the sink is paused must start paused too, or a reconnecting
+    // client would drain into it and the backpressure under test would disappear.
+    if (paused) socket.pause();
     let buffer = '';
     socket.setEncoding('utf8');
     socket.on('data', (chunk: string) => {
@@ -77,6 +85,14 @@ export async function startTestSink(): Promise<TestSink> {
     dropConnections: () => {
       for (const socket of sockets) socket.destroy();
       sockets.clear();
+    },
+    pauseConnections: () => {
+      paused = true;
+      for (const socket of sockets) socket.pause();
+    },
+    resumeConnections: () => {
+      paused = false;
+      for (const socket of sockets) socket.resume();
     },
     close: async () => {
       // `server.close()` stops accepting but waits for existing connections to end on their own,
