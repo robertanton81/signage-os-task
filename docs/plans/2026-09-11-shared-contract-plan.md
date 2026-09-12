@@ -1,3 +1,41 @@
+> **STATUS: SHIPPED 2026-09-12.** Landed as 10 commits `7185588..6aaef6e` on `main`. The unchecked `- [ ]` boxes below are historical — work is done. **Do not re-execute this plan.** If you're modifying the message contract, the storage document types, the broker/collection names, the logger or the config loader, work directly in `packages/shared/src/`.
+>
+> **Plan-vs-reality corrections discovered during execution:**
+>
+> **Library/version drift:** `zod@4.6.2` and `pino@10.3.1` installed exactly as pinned; no version drift. One missing dependency had to be added: `packages/shared/package.json` now declares `"devDependencies": { "vitest": "catalog:" }`. Before that, all seven `*.test.ts` files and `contract.test-d.ts` imported `vitest` and resolved only because `packages/shared` sits under the repo root — pnpm's isolated `node_modules` never granted it.
+>
+> **Plan code prescriptions that needed adjustment:**
+>
+> - `loadConfig<S extends z.ZodType>(schema, env): z.output<S>` looks like it should fail (returning `result.data` where the constraint is `ZodType<unknown>`) but **compiles fine**: zod 4.6.2 declares `safeParse(data): ZodSafeParseResult<core.output<this>>` with a polymorphic `this`. Do not "fix" it with a cast.
+> - `Object.hasOwn` cannot replace the `in` operator in `extractRawIdentity`. TypeScript 6.0.3's `lib.es2022.object.d.ts` declares `hasOwn(o: object, v: PropertyKey): boolean` — a plain boolean, not a type predicate — so it does not narrow `unknown` and produces six TS2339 errors. `in` stays; a comment in `identity.ts` records this.
+> - `SectionMeta` must stay a plain object type. Rewriting it as `Pick<TelemetryMessage, 'sessionId' | 'seq' | 'occurredAt'> & { receivedAt: number }` breaks the one `contract.test-d.ts` assertion that guards `SectionMeta`'s shape (the assertion inlines the four fields on purpose, so both sides must not move together).
+> - In `contract.test-d.ts`, `expectTypeOf<DeviceStateDocument>().toEqualTypeOf<{ _id: string } & { [K in TelemetryEventType]?: DeviceStateSection<K> }>()` does **not** compile — `toEqualTypeOf` does not equate that intersection with the declared type. The explicit per-field object literal does, and catches the same swap.
+> - An app that exports an inferred logger binding fails with **TS2883** (TS 6's successor to TS2742): "The inferred type of 'x' cannot be named without a reference to 'Logger' from '.../pino/pino.js'". Verified by probe in `apps/ingest`. Fix: annotate as `Logger` imported from `@telemetry/shared`, never add `pino` to an app's dependencies.
+> - A failed `expectTypeOf` assertion surfaces as `TS2554: Expected 1 arguments, but got 0`, not as a readable message. When `tsc -b` reports that on a `.test-d.ts` line, the type assertion failed.
+>
+> **Corrections applied during review (commits `0fe6e7d`, `aa04972`, `0d46cc1`, `0cb0631`, `84d54c5`, `4035b24`, `f958d0c`, `3128a1c`):**
+>
+> - **`message.test.ts`: the invalid-input table grew from 23 rows to 33.** The plan's Task 2 header claimed the table proved `sessionId >= 1`; it did not — `sessionId` had only a wrong-type case. Added `sessionId` 0 and fractional, the `DIAGNOSTIC_CODE_MAX_LENGTH` upper bound, unknown-key rejection for the metrics/counters/diagnostic payloads (only `status` was covered, so three of four `z.strictObject`s were unproven), plus the missing sibling constraints on `cpuPercent`/`ramPercent`/`operationsTotal`/`uptimeMs`.
+> - **`framing.ts`: silent data loss fixed.** `push()` threw `FrameTooLongError` after already decoding valid frames from the same chunk, and those frames were unrecoverable — reproduced with `FrameDecoder(8).push('ok\nXXXXXXXXXXXXX')`, which lost `'ok'`. `FrameTooLongError` now carries `readonly frames: readonly string[]`. Tests added for the exact-limit boundary, decoder reuse after both throw sites, cross-instance isolation, the caller-buffer aliasing hazard, and a three-chunk split.
+> - **`decode.ts`: `detail` is capped at 512 characters.** zod's `unrecognized_keys` message quotes offending key names verbatim, so one 64 KiB frame of junk keys produced a ~64 KiB log line. Measured against 4.6.2: `unrecognized_keys` echoes the key, `invalid_value` does **not** echo the received value. Docstring now states that the caller must bound `text`.
+> - **`documents.ts` + `contract.test-d.ts`: a payload/watermark name collision was undetectable.** The update pipeline spreads `...payload` last, so a payload field named `sessionId`/`seq`/`occurredAt`/`receivedAt` would silently overwrite the watermark and break invariant 1. Added a `SectionMetaCollision` mapped-type guard (the naive `keyof PayloadOf<TelemetryEventType> & keyof SectionMeta` is vacuously `never` and would pass regardless). Also added full-shape assertions for `DeviceStateDocument` and `AlertDocument` — swapping two section types compiled cleanly before.
+> - **`logger.ts`: `messageLogger` split.** It accepted a partial identity on the valid-message path, so the convention "every log line about a message carries the identity" could be broken silently. Now `messageLogger(logger, identity: MessageIdentity)` for validated messages and `rejectedMessageLogger(logger, identity: RawIdentity)` for decode failures. Added `redact` for `RABBITMQ_URL`/`MONGODB_URL`, which carry passwords.
+> - **`config.ts`: whitespace-only values now count as unset.** `SHUTDOWN_TIMEOUT_MS=" "` silently produced `0` (because `Number(' ')` is `0` and the field's minimum is `0`), leaving a service with no drain window. The filter now uses `value.trim() !== ''`; an explicit `"0"` is still honoured. `envInt` also throws at construction time when its default is below its own minimum.
+> - Test files split throughout so each test has one reason to fail; several tests that only re-proved zod or pino behaviour were removed or strengthened.
+>
+> **Deferrals worth tracking (these feed the README's "known limits" and "what we'd do with more time"):**
+>
+> - `FrameDecoder` re-copies and re-scans the pending tail on every chunk: O(N·k) for a frame arriving in k chunks, worst case ~65536² byte operations. Bounded by `MAX_FRAME_BYTES`, so not exploitable into unbounded growth. Fix if it ever matters: start `indexOf` at `#pending.length`.
+> - `decode.ts` truncates by UTF-16 code unit, so an astral character landing at offset 512 can be split. Cosmetic; never throws.
+> - Nothing can distinguish `result.data` from the raw parsed value in `decodeTelemetryMessage` until the schema gains a `.transform()`.
+> - `envInt` uses `z.coerce.number()`, so `0x10`, `1e3` and `+5` are accepted. Every accepted form still yields a sane in-range integer.
+> - **Steps 3–5 must:** catch `ConfigError` at each service entry point and exit; `await logger.flush()` before `process.exit()`; annotate exported logger bindings as `Logger` from `@telemetry/shared`; strip userinfo from a connection string before logging any driver error (pino's `redact` matches object paths, not substrings inside a string); and re-bound the message body on the AMQP consume path, since `MAX_FRAME_BYTES` only guards the socket path.
+> - `occurredAt` is `z.int()` with no lower bound, so a corrupt device clock can send `0` or a negative value. It is diagnostic only and never decides order (consistency spec, decision 4).
+> - `message.test.ts` uses `toContainEqual` rather than an exact one-element array. Do not tighten it: `'an empty deviceId'` legitimately produces two issues (`too_small` + `invalid_format`), since the empty string fails both `.min(1)` and the device-id regex.
+> - `DeviceStateSection` flattens `SectionMeta` with the payload rather than nesting the payload; nesting was considered and rejected to keep query paths one level shorter. The collision guard above is what makes the flattening safe.
+>
+> **Plan history below is preserved as-written for context. Treat the live code as authoritative.**
+
 # Shared Contract Package Implementation Plan
 
 **Goal:** Turn `packages/shared` into the message contract, the storage document types, the broker and database naming, and the shared configuration and logging helpers that steps 3–5 build on.

@@ -42,13 +42,13 @@ Rozhodnuto 2026-09-11 ve specu `docs/specs/2026-09-11-telemetry-consistency-desi
 
 ## 2. Sdílený balíček (kontrakt zpráv a domény)
 
-- [ ] Definovat typy telemetrických událostí: provozní stav, naměřené hodnoty, čítače, diagnostika/chyby.
-- [ ] Definovat společnou obálku zprávy s metadaty z kroku 0.
-- [ ] Definovat validační schéma zpráv – použije ingest při příjmu i testy.
-- [ ] Definovat typ „aktuální stav zařízení“ tak, jak bude uložen v MongoDB.
-- [ ] Definovat sdílené konvence pro pojmenování front/exchange v RabbitMQ a kolekcí v MongoDB.
-- [ ] Sdílená konfigurace (načítání env proměnných, logování).
-- [ ] Unit testy validace a helperů.
+- [x] Definovat typy telemetrických událostí: provozní stav, naměřené hodnoty, čítače, diagnostika/chyby.
+- [x] Definovat společnou obálku zprávy s metadaty z kroku 0.
+- [x] Definovat validační schéma zpráv – použije ingest při příjmu i testy.
+- [x] Definovat typ „aktuální stav zařízení“ tak, jak bude uložen v MongoDB.
+- [x] Definovat sdílené konvence pro pojmenování front/exchange v RabbitMQ a kolekcí v MongoDB.
+- [x] Sdílená konfigurace (načítání env proměnných, logování).
+- [x] Unit testy validace a helperů.
 
 ## 3. Emulátor zařízení
 
