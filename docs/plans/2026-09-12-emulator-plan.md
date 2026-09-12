@@ -20,6 +20,19 @@
 >
 > **A harness artifact worth recording:** `kill -TERM $!` from the shell in this environment signals a wrapper process, not node, so the SIGTERM handler appeared broken three times in a row while being correct. Driving the child from a Node script (`.local/research/2026-09-12-emulator-manual-run.mjs`) showed the real behaviour: shutdown logged, drain completed, every device ending on `status: offline`, exit code 0.
 >
+> **Post-implementation review (`code-reviewer` + `test-quality-reviewer`, 2026-09-12), six blocking findings, all fixed in `9c37791` and `d31f8a4`:**
+>
+> - **No connect timeout anywhere.** Against a black-holed address — packets dropped rather than refused, which is what a firewall rule, a stale NAT entry or an ingest replica mid-restart looks like — neither `error` nor `close` fires, so the socket sat in `connecting` for the operating system's SYN budget (commonly 75 s). The device could not reach `backoff` and could not retry: decision 21's "retry forever" silently became "stall forever" for exactly the failure this design exists to survive. Fixed with an inactivity timeout armed for the connect phase and disabled on `connect` (`setTimeout(0)`); leaving it armed would close a healthy connection that had nothing to say for ten seconds.
+> - **`DeviceConnection.stop()` was unbounded**, and `Fleet.shutdown()`'s last step awaited it with no deadline of its own, so the drain could outlive `SHUTDOWN_TIMEOUT_MS` despite decision 20 promising otherwise. It now races a hard cap that destroys the socket.
+> - **No `unhandledRejection` / `uncaughtException` handler.** `main.ts` now installs both. They are built by `createLifecycleHandlers`, a factory taking `exit` as an argument, so the drain-once and second-signal rules are tested by calling the handlers directly rather than by stubbing globals.
+> - **Connection-level chaos had no end-to-end coverage.** `chaos.test.ts` tested only the pure decision; nothing drove `#onConnectionChaos` against a live socket. Two `device.test.ts` cases now assert `restart` opens a strictly greater `sessionId` with `seq` back at 1, and `disconnect` keeps the session with `seq` continuing.
+> - **Backpressure was never tested** — the one thing the design spec itself said was worth using a real socket for. The test sink can now stop reading; the test writes until `write()` returns `false`, asserts the `writable` flag flipped, then resumes and asserts `'drain'` re-opens the pump.
+> - **Outbox overflow was never tested through a live device.** A case with `EMULATOR_OUTBOX_MAX: 2` and an unreachable port now asserts `stats.dropped` rises and the `warn` line names the dropped identity.
+>
+> Two assertions were also too weak to fail and were tightened: "goes to backoff" accepted `resolving` and `connecting`, which `start()` reaches synchronously, so it returned on the first poll and would have passed with the backoff transition deleted; and a stats assertion accepted any positive count. Three further mutations were verified against the new tests (backpressure not recorded, connect timeout not armed, `restart` not performed) — each fails exactly one. A dead exponent clamp in `backoff.ts` was removed rather than left with a comment claiming a protection it never provided.
+>
+> **Final state: 311 tests, `pnpm lint && pnpm typecheck && pnpm test && pnpm format:check` all green.**
+>
 > **Plan text below is preserved as written. Treat the live code as authoritative.**
 
 # Device Emulator Implementation Plan
