@@ -4,13 +4,6 @@ export const BACKOFF_BASE_MS = 500;
 export const BACKOFF_MAX_MS = 10_000;
 
 /**
- * Clamp on the exponent, applied before the multiply. A device that has been unable to reach
- * ingest for hours reaches a high attempt count, and `2 ** 1000` is `Infinity`: without this the
- * ceiling would stop being a number and the delay would become `NaN`.
- */
-const MAX_EXPONENT = 31;
-
-/**
  * Full Jitter: uniform in `[0, min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** attempt))`.
  *
  * `attempt` is 0-based and resets on a successful connect. Full Jitter rather than Equal Jitter
@@ -22,6 +15,9 @@ const MAX_EXPONENT = 31;
  * waiting ten seconds for it.
  */
 export function backoffDelay(attempt: number, random: Random): number {
-  const ceiling = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** Math.min(attempt, MAX_EXPONENT));
+  // No clamp on the exponent is needed: past about 2 ** 1024 the product becomes `Infinity`, and
+  // `Math.min(BACKOFF_MAX_MS, Infinity)` is still `BACKOFF_MAX_MS`. An earlier version clamped it
+  // and claimed to prevent a `NaN`, which it never could — dead code with a wrong reason attached.
+  const ceiling = Math.min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 ** attempt);
   return random.range(0, ceiling);
 }

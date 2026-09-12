@@ -42,8 +42,11 @@ describe('backoffDelay', () => {
   it('holds at the cap once the ceiling passes it', () => {
     const atCap = backoffDelay(5, ALMOST_ONE);
     expect(atCap).toBeGreaterThan(BACKOFF_MAX_MS * 0.99);
-    // A very large attempt must not overflow the shift into Infinity or a negative number.
+    // Stays saturated however long the outage runs, including past the point where the doubling
+    // overflows to Infinity — `Math.min(cap, Infinity)` is still the cap, never NaN.
     expect(backoffDelay(1_000, ALMOST_ONE)).toBeCloseTo(atCap, 5);
+    expect(backoffDelay(5_000, ALMOST_ONE)).toBeCloseTo(atCap, 5);
+    expect(Number.isFinite(backoffDelay(5_000, ALMOST_ONE))).toBe(true);
   });
 
   it('depends only on the injected random source', () => {

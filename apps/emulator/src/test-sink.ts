@@ -33,7 +33,7 @@ export async function startTestSink(): Promise<TestSink> {
   const sockets = new Set<net.Socket>();
   let accepted = 0;
   let paused = false;
-  let notify: (() => void) | null = null;
+  const waiters = new Set<() => void>();
 
   const server = net.createServer((socket) => {
     accepted += 1;
@@ -51,7 +51,7 @@ export async function startTestSink(): Promise<TestSink> {
         buffer = buffer.slice(index + 1);
         index = buffer.indexOf('\n');
       }
-      notify?.();
+      for (const waiter of [...waiters]) waiter();
     });
     socket.on('error', () => {
       // A client destroying its socket surfaces here as ECONNRESET; it is the scenario, not a fault.
@@ -72,14 +72,16 @@ export async function startTestSink(): Promise<TestSink> {
     connectionCount: () => accepted,
     waitForLines: (count) =>
       new Promise<string[]>((resolve) => {
+        // A set of waiters rather than one slot: two concurrent waits on the same sink would
+        // otherwise overwrite each other and the first would hang until the test timed out.
         const check = () => {
           if (lines.length >= count) {
-            notify = null;
+            waiters.delete(check);
             resolve([...lines]);
           }
         };
         // Event-driven, never a sleep: this resolves on the data event that crosses the threshold.
-        notify = check;
+        waiters.add(check);
         check();
       }),
     dropConnections: () => {
