@@ -71,6 +71,13 @@ importers:
       '@telemetry/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.2
+    devDependencies:
+      vitest:
+        specifier: 'catalog:'
+        version: 4.1.11(@types/node@24.13.3)(vite@8.2.2(@types/node@24.13.3))
 
   apps/ingest:
     dependencies:

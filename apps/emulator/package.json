@@ -11,6 +11,10 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
-    "@telemetry/shared": "workspace:*"
+    "@telemetry/shared": "workspace:*",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "vitest": "catalog:"
   }
 }
