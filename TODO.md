@@ -42,6 +42,8 @@ Rozhodnuto 2026-09-11 ve specu `docs/specs/2026-09-11-telemetry-consistency-desi
 
 ## 2. Sdílený balíček (kontrakt zpráv a domény)
 
+Opraveno 2026-09-12 podle `docs/plans/2026-09-12-review-fixes-plan.md` (10 commitů `7b27df8..b88abae`, 202 unit testů). Položky níže zůstávají hotové; opravy se týkaly redakce hesel v logu, hranic kontraktu, dekodéru rámců a konfigurace.
+
 - [x] Definovat typy telemetrických událostí: provozní stav, naměřené hodnoty, čítače, diagnostika/chyby.
 - [x] Definovat společnou obálku zprávy s metadaty z kroku 0.
 - [x] Definovat validační schéma zpráv – použije ingest při příjmu i testy.

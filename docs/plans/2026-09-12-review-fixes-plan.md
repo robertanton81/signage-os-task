@@ -1,3 +1,38 @@
+> **STATUS: SHIPPED 2026-09-12.** Landed as 10 commits, `7b27df8..b88abae`. The unchecked `- [ ]` boxes below are historical — the work is done. **Do not re-execute this plan.** If you are changing the shared package, work directly in `packages/shared/src/`; if you are changing the design, work in `docs/specs/`.
+>
+> **Plan-vs-reality corrections discovered during execution:**
+>
+> **Library/version drift:** `amqplib` and `mongodb` are still not installed (steps 4 and 5 install them), so the option shapes this plan added could not be checked by `tsc`. They were verified against primary sources instead: the amqplib channel API documents `durable` and `arguments` on `assertQueue`/`assertExchange`, and `mongodb` 7.6.0 `src/operations/indexes.ts` declares `IndexDescription` as `key` plus optional `name` and `unique`, both present in its `VALID_INDEX_OPTIONS`. Test count: this plan predicts 151; the tree ships 202, because every correction below arrived with its own failing-first test.
+>
+> **Plan code prescriptions that needed adjustment** (each was verified by measurement or by a mutation, not by opinion):
+>
+> - `logger.ts` (task 2), four defects. Child bindings were never redacted, and the obvious fix does not work: pino installs its own identity formatter on every `.child()` created without an options object (`lib/proto.js:84,98-102`), so `formatters.bindings` reaches the root `base` only — the bindings are redacted at the call site in `childWithIdentity` instead. The walk failed **open** at its depth bound, printing a string five levels deep; it now fails closed at eight. Nothing was guarded against a throw, and pino wraps neither `formatters` nor `serializers` nor `hooks.logMethod`, so a getter that threw escaped the log call. The shutdown comment named `beforeExit`; only `exit` is registered for this destination (`lib/tools.js:276`). Residual, now lint-enforced: a raw `logger.child()` is still unredacted.
+> - `identity.ts` (task 3). The plan truncated an oversized `deviceId` to 64 characters. Those first 64 characters can be another device's id, so a sender could make its own rejected frames look like that device's. A non-conforming `deviceId` is dropped instead, which also removes control characters, ANSI escapes and split surrogate pairs in one rule. **Verification criterion 5 below is therefore stale** — the id is dropped, not cut.
+> - `framing.ts` (task 4). The plan's chunk-list tail is linear in time but costs one JS `Buffer` object per chunk: 65 536 one-byte pushes held 9.4 MB of heap for 64 KiB of data, trading a CPU denial of service for a memory one. A single buffer that grows by doubling measures 8.3 ms and 0.4 MB. Its capacity is `Math.max(needed, doubled)` rather than a doubling loop, because `Buffer.copy` writes only what fits while the byte count still claims the full length — a short capacity would truncate a line with no error anywhere.
+> - `message.ts` (task 5). `seq` had no ceiling, although the poisoning argument behind the `sessionId` window applies to it inside a session; it is capped at `SEQ_MAX`. The comment dated `SESSION_ID_MAX` to 2099-11-26; the value is 2099-12-03. Neither bound named its trade-off, so T18 was added.
+> - `decode.ts` (task 6). A device names its own JSON keys and zod quotes an unrecognised one verbatim, so a key containing the `'; '` join token rendered one real issue as two and forged a failure of a field that had validated. The token is removed from each message before joining.
+> - `config.ts` (task 7). `envInt`'s swap guard was blind to `NaN`, because every comparison against it is false.
+> - `assert-never.ts` (task 9). The planned fallback `String(value)` throws in its own right on a null-prototype object or a hostile `toString`, so a circular _and_ unconvertible value still lost the guard's own message. `Object.prototype.toString.call` is the last resort.
+>
+> **Plan predictions that were wrong** — a future plan author copying this format should not trust these counts:
+>
+> - Task 1 edit 28's header reads "replace the whole table row whose first cell is `T10` **with:**" — a replace whose payload is inline, with no `**with:**` block of its own. A parser that classifies by the trailing word treats it as an insert and duplicates the row.
+> - Task 1's `replace` anchors carry table padding from a different formatting state; the task text says it ("match the words, not the spaces") and an exact-string matcher fails on edit 3.
+> - Task 5 predicted seven failing rows; five failed. `z.int()` already restricts to the safe-integer range, so the two safe-integer rows never were red.
+> - Task 6 predicted two failing tests; one failed. V8 never produced a `JSON.parse` message longer than 86 characters across six input shapes, because it truncates the input it quotes — that cap can only be exercised by stubbing the parser.
+>
+> **Corrections applied during review (commit `7b27df8`):** the trade-off table carried two rows numbered `T10`, the second superseding the first; decision 27 justified itself with `modifiedCount`, which the `findOneAndUpdate` path decision 29 introduced does not return; and the failure row for two instances racing on a new device stated the colliding-upsert conversion as certain, although it is documented for `update` and not for `findAndModify`.
+>
+> **Deferrals worth tracking** (candidates for the README's "known limits" and for steps 3–7):
+>
+> - `decode.ts`'s total `detail` is bounded by the issue count, not by a constant — 11 issues and 993 bytes measured for a message with every field wrong and 2 000 junk keys. Re-derive it if the contract ever gains an array or a record field.
+> - `INGEST_HOSTS` and `EMULATOR_CHAOS` are comma-separated; whoever writes their zod fragments must trim each entry, not only the whole string.
+> - `z.coerce.number()` is `Number()`, so `0x10` reads as 16 and `1e3` as 1000. Documented, not changed.
+> - No type-level test pins `telemetryMessageSchema`'s own inferred payload types; `contract.test-d.ts` covers the storage documents only.
+> - `decodeTelemetryMessage`'s success branch cannot be shown to return the parsed value rather than the raw input while the schema has no transform.
+>
+> **Plan history below is preserved as-written for context. Treat the live code as authoritative.**
+
 # Review Fixes Implementation Plan
 
 **Goal:** Apply every finding of the 2026-09-12 code review that concerns what is already built — the two design specs and `packages/shared` — so that steps 3–5 are planned against corrected specs and a shared package that does not leak secrets, drop telemetry or hide a bad index option.
