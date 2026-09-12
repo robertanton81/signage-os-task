@@ -14,5 +14,9 @@
     "typecheck": "tsc -b",
     "lint": "eslint .",
     "test": "vitest run --root ../.. packages/shared"
+  },
+  "dependencies": {
+    "pino": "catalog:",
+    "zod": "catalog:"
   }
 }
