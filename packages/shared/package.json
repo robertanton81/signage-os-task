@@ -18,5 +18,8 @@
   "dependencies": {
     "pino": "catalog:",
     "zod": "catalog:"
+  },
+  "devDependencies": {
+    "vitest": "catalog:"
   }
 }
