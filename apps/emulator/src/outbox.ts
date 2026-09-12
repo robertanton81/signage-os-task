@@ -39,6 +39,11 @@ export class Outbox {
     return evicted;
   }
 
+  /** The head, left in place. The pump looks before it writes, so a refused write reorders nothing. */
+  peek(): OutboxEntry | null {
+    return this.#entries[0] ?? null;
+  }
+
   shift(): OutboxEntry | null {
     return this.#entries.shift() ?? null;
   }
