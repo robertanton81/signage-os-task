@@ -54,13 +54,15 @@ Opraveno 2026-09-12 podle `docs/plans/2026-09-12-review-fixes-plan.md` (10 commi
 
 ## 3. Emulátor zařízení
 
-- [ ] Konfigurovatelný počet zařízení a frekvence událostí (env / argumenty).
-- [ ] Každé zařízení naváže dlouhodobé socketové spojení k ingest službě.
-- [ ] Generování všech typů událostí v realistickém rytmu.
-- [ ] Zařízení udržuje vlastní logické pořadí událostí, aby bylo možné na straně zpracování ověřit správnost.
-- [ ] Reconnect při ztrátě spojení.
-- [ ] Volitelný režim simulace problémových scénářů: duplicitní zprávy, zprávy mimo pořadí, výpadek spojení. Poslouží testům i demu.
-- [ ] Unit testy generátoru událostí.
+Hotovo 2026-09-12 podle `docs/specs/2026-09-12-emulator-design.md` a `docs/plans/2026-09-12-emulator-plan.md` (13 commitů `a1f3736..`, 98 nových testů, celkem 300).
+
+- [x] Konfigurovatelný počet zařízení a frekvence událostí (env / argumenty).
+- [x] Každé zařízení naváže dlouhodobé socketové spojení k ingest službě.
+- [x] Generování všech typů událostí v realistickém rytmu.
+- [x] Zařízení udržuje vlastní logické pořadí událostí, aby bylo možné na straně zpracování ověřit správnost.
+- [x] Reconnect při ztrátě spojení.
+- [x] Volitelný režim simulace problémových scénářů: duplicitní zprávy, zprávy mimo pořadí, výpadek spojení. Poslouží testům i demu.
+- [x] Unit testy generátoru událostí.
 
 ## 4. Socket ingest služba
 

@@ -1,3 +1,27 @@
+> **STATUS: SHIPPED 2026-09-12.** Landed as 13 commits, `a1f3736..` (spec, plan, then one commit per task). Full pre-flight green: `pnpm lint && pnpm typecheck && pnpm test` — 300 tests, 98 of them new. The unchecked `- [ ]` boxes below are historical; the work is done. **Do not re-execute this plan.** If you are changing the emulator, work directly in `apps/emulator/src/`.
+>
+> **Plan-vs-reality corrections found during execution:**
+>
+> - **The faulty-device temperature band was wrong.** The spec said 82–88 °C only after this run corrected it from a first draft of 70–80 °C. The pull term makes the walk far tighter than it looks — measured stationary standard deviation 1.98 °C, largest excursion 7.5 °C over 20 000 ticks — so 70–80 sits two to seven standard deviations below the overheat threshold and crossed it about once in 222 ticks at the very top of the band and never at the bottom. A demo run would have produced no alerts at all, which is the one thing decision 9 exists to prevent. `generator.test.ts` now asserts a crossing COUNT, because "crosses at least once" passed under the broken constants too.
+> - **`Fleet.shutdown()` had to become idempotent.** SIGTERM followed by SIGINT calls it twice, and the second pass queued a second farewell with no writable socket left, so the drain waited out its whole budget for a message it could never send. Found when the test harness called it twice in `afterEach`.
+> - **The plan's `pump()` needed `Outbox.peek()`.** The plan described shifting and pushing back on a refused write; that would put the entry behind anything enqueued in between, making the emulator itself a source of reordering. It peeks and removes only on success.
+> - **`DeviceConnection` needed a `#isStopped()` method, not an inline check.** After `this.#state = { name: 'resolving' }` TypeScript narrows the field and rejects the later `=== 'stopped'` comparison as impossible — but `stop()` can run while the DNS lookup is awaiting, so the check is load-bearing at runtime.
+> - **A successful connect must reset the backoff attempt counter.** The plan did not say so; without it a device that connected on attempt 8 and then lost the link waited the full ten seconds before retrying.
+> - **The tick phase must come from the seeded stream**, not `Math.random()`, or `EMULATOR_SEED` stops being a reproduction recipe. The plan's signature block implied the injected `Random` but the prose did not say it.
+> - **`.local/` had to be added to `eslint.config.js` and `.prettierignore`.** The probe scripts live there and are gitignored, but the root `pnpm lint` still walked them.
+>
+> **Test-quality corrections — three tests were written, found not to bite, and rewritten:**
+>
+> - `fleet.test.ts`'s "sends nothing after the farewell" passed with BOTH `#stopped` guards deleted, because at fleet level the drain completes in under a millisecond and the heartbeat timer never gets the chance to fire. The real regression test lives in `device.test.ts`, waits five heartbeat periods between `prepareShutdown()` and the pump, and asserts the outbox did not grow.
+> - `device.test.ts`'s first heartbeat test asserted on `waitForLines(3)`, which a random tick phase could satisfy with a metrics line. It now compares heartbeat statuses against metrics over eight lines.
+> - Several shutdown assertions read `sink.lines()` straight after `await shutdown()`. That resolves when the bytes reach the kernel, not when the sink's data handler has run — a race, not a check. They now wait for the farewell to arrive.
+>
+> **Mutation testing, run against the finished code** (each mutation reverted immediately): dropping the `+1` branch of the `sessionId` rule, not incrementing `seq`, removing the `uptimeMs` clamp, never reconnecting after a socket close, replacing the heartbeat re-arm with a plain periodic timer, shifting before writing in the pump, routing the farewell back through `chaos.apply`, and removing both `#stopped` guards — **all eight fail at least one test.**
+>
+> **A harness artifact worth recording:** `kill -TERM $!` from the shell in this environment signals a wrapper process, not node, so the SIGTERM handler appeared broken three times in a row while being correct. Driving the child from a Node script (`.local/research/2026-09-12-emulator-manual-run.mjs`) showed the real behaviour: shutdown logged, drain completed, every device ending on `status: offline`, exit code 0.
+>
+> **Plan text below is preserved as written. Treat the live code as authoritative.**
+
 # Device Emulator Implementation Plan
 
 **Goal:** Build `apps/emulator` so that `EMULATOR_DEVICE_COUNT` emulated devices each hold a long-lived socket to ingest, produce all four telemetry event types in a believable rhythm with a never-reused `(sessionId, seq)`, reconnect on loss, and can inject the four chaos modes on demand.

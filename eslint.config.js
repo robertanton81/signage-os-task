@@ -5,7 +5,9 @@ import { defineConfig, globalIgnores } from 'eslint/config';
 import tseslint from 'typescript-eslint';
 
 export default defineConfig([
-  globalIgnores(['**/dist/**', '**/node_modules/**', '**/coverage/**']),
+  // `.local/` is the gitignored scratch directory (CLAUDE.md, "Local scratch"): study notes,
+  // throwaway probes, downloaded reference material. None of it ships, so none of it is linted.
+  globalIgnores(['**/dist/**', '**/node_modules/**', '**/coverage/**', '.local/**']),
   {
     files: ['**/*.{js,mjs,cjs}'],
     extends: [js.configs.recommended],
