@@ -94,6 +94,8 @@ Probe (this session, Node 24.21.0, macOS 25.6, one process running both the N cl
 
 The measurement is conservative: in a real run the receiving side is `apps/ingest` in another container, so the emulator process does roughly half this work. Script: `.local/research/2026-09-12-emulator-socket-probe.mjs` (gitignored, as `CLAUDE.md` requires of scratch material) — N chained-`setTimeout` clients writing one NDJSON metrics line per interval to a local sink, measured with `monitorEventLoopDelay({ resolution: 10 })`. Run it as `node <script> <devices> <intervalMs> <runMs>`. The 10 ms floor in the "idle" row is the histogram's own resolution, not real delay, which is why the table reports the idle baseline next to the loaded runs.
 
+**Confirmed against the finished implementation (2026-09-12).** The table above was measured with a synthetic client before any emulator code existed, so it was re-run against the built service: 500 devices at one message per second delivered 5 155 lines in 8 seconds at 82 MB RSS, and 2 000 devices delivered 20 581 lines (about 2 570 messages per second, counters included) at 110 MB RSS. The real implementation is therefore in line with the probe, and the 5 000-device working limit stands. Script: `.local/research/2026-09-12-emulator-socket-probe.mjs` for the synthetic run.
+
 ## Design
 
 ### Module layout (`apps/emulator/src/`)
