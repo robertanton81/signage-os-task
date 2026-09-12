@@ -2,8 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import { exampleMessages } from './fixtures.js';
 import {
+  DEVICE_ID_MAX_LENGTH,
   DIAGNOSTIC_CODE_MAX_LENGTH,
   DIAGNOSTIC_MESSAGE_MAX_LENGTH,
+  PERCENT_MAX,
+  PERCENT_MIN,
+  SEQ_MAX,
+  SESSION_ID_MAX,
+  SESSION_ID_MIN,
   TELEMETRY_EVENT_TYPES,
   telemetryMessageSchema,
 } from './message.js';
@@ -55,6 +61,13 @@ describe('telemetryMessageSchema', () => {
       path: ['deviceId'],
     },
     {
+      // `deviceId:sessionId:seq` is the dedup key, the AMQP messageId and `alerts._id`.
+      name: 'a deviceId containing the identity separator',
+      input: { ...status, deviceId: 'dev:0001' },
+      code: 'invalid_format',
+      path: ['deviceId'],
+    },
+    {
       name: 'a 65-character deviceId',
       input: { ...status, deviceId: 'd'.repeat(65) },
       code: 'too_big',
@@ -68,15 +81,30 @@ describe('telemetryMessageSchema', () => {
     },
     { name: 'seq 0', input: { ...status, seq: 0 }, code: 'too_small', path: ['seq'] },
     {
+      // Beyond 2^53 a double cannot count by one, so `isNewer` would stop distinguishing messages.
+      name: 'a seq beyond the safe integer range',
+      input: { ...status, seq: Number.MAX_SAFE_INTEGER + 2 },
+      code: 'too_big',
+      path: ['seq'],
+    },
+    {
       name: 'a fractional seq',
       input: { ...status, seq: 1.5 },
       code: 'invalid_type',
       path: ['seq'],
     },
     {
-      name: 'sessionId 0',
-      input: { ...status, sessionId: 0 },
+      // Seconds since the epoch: a clock unit error that would stay "older" than every session.
+      name: 'a sessionId below the plausible epoch-millisecond window',
+      input: { ...status, sessionId: SESSION_ID_MIN - 1 },
       code: 'too_small',
+      path: ['sessionId'],
+    },
+    {
+      // Microseconds: 1 000× too large, it would stay "newer" than every later real session.
+      name: 'a sessionId above the plausible epoch-millisecond window',
+      input: { ...status, sessionId: SESSION_ID_MAX + 1 },
+      code: 'too_big',
       path: ['sessionId'],
     },
     {
@@ -95,6 +123,12 @@ describe('telemetryMessageSchema', () => {
       name: 'a missing occurredAt',
       input: statusWithoutOccurredAt,
       code: 'invalid_type',
+      path: ['occurredAt'],
+    },
+    {
+      name: 'a negative occurredAt',
+      input: { ...status, occurredAt: -1 },
+      code: 'too_small',
       path: ['occurredAt'],
     },
     {
@@ -153,6 +187,18 @@ describe('telemetryMessageSchema', () => {
       input: { ...metrics, payload: { ...metrics.payload, cpuPercent: Number.NaN } },
       code: 'invalid_type',
       path: ['payload', 'cpuPercent'],
+    },
+    {
+      name: 'a cpuPercent above 100',
+      input: { ...metrics, payload: { ...metrics.payload, cpuPercent: PERCENT_MAX + 0.5 } },
+      code: 'too_big',
+      path: ['payload', 'cpuPercent'],
+    },
+    {
+      name: 'a negative ramPercent',
+      input: { ...metrics, payload: { ...metrics.payload, ramPercent: -1 } },
+      code: 'too_small',
+      path: ['payload', 'ramPercent'],
     },
     {
       name: 'an infinite ramPercent',
@@ -228,7 +274,83 @@ describe('telemetryMessageSchema', () => {
     },
     { name: 'a non-object', input: 'text', code: 'invalid_type', path: [] },
     { name: 'null', input: null, code: 'invalid_type', path: [] },
+    {
+      name: 'a seq above the ceiling, which would freeze the rest of the session',
+      input: { ...status, seq: SEQ_MAX + 1 },
+      code: 'too_big',
+      path: ['seq'],
+    },
+    {
+      name: 'a negative cpuPercent',
+      input: { ...metrics, payload: { ...metrics.payload, cpuPercent: -1 } },
+      code: 'too_small',
+      path: ['payload', 'cpuPercent'],
+    },
+    {
+      name: 'a ramPercent above 100',
+      input: { ...metrics, payload: { ...metrics.payload, ramPercent: PERCENT_MAX + 0.5 } },
+      code: 'too_big',
+      path: ['payload', 'ramPercent'],
+    },
   ];
+
+  // Every bound above pins the first rejected value. These pin the last accepted one, so an
+  // off-by-one that tightens a bound cannot pass unnoticed.
+  const accepted = [
+    {
+      name: 'the earliest sessionId in the window',
+      input: { ...status, sessionId: SESSION_ID_MIN },
+    },
+    { name: 'the latest sessionId in the window', input: { ...status, sessionId: SESSION_ID_MAX } },
+    { name: 'seq 1', input: { ...status, seq: 1 } },
+    { name: 'seq at the ceiling', input: { ...status, seq: SEQ_MAX } },
+    { name: 'occurredAt 0', input: { ...status, occurredAt: 0 } },
+    { name: 'a one-character deviceId', input: { ...status, deviceId: 'd' } },
+    {
+      name: 'a deviceId of exactly the maximum length',
+      input: { ...status, deviceId: 'd'.repeat(DEVICE_ID_MAX_LENGTH) },
+    },
+    {
+      name: 'both percentages at their minimum',
+      input: {
+        ...metrics,
+        payload: { ...metrics.payload, cpuPercent: PERCENT_MIN, ramPercent: PERCENT_MIN },
+      },
+    },
+    {
+      name: 'both percentages at their maximum',
+      input: {
+        ...metrics,
+        payload: { ...metrics.payload, cpuPercent: PERCENT_MAX, ramPercent: PERCENT_MAX },
+      },
+    },
+    {
+      name: 'a one-character diagnostic code',
+      input: {
+        ...diagnostic,
+        payload: { ...diagnostic.payload, code: 'E' },
+      },
+    },
+    {
+      name: 'a diagnostic code and message of exactly the maximum length',
+      input: {
+        ...diagnostic,
+        payload: {
+          ...diagnostic.payload,
+          code: 'E'.repeat(DIAGNOSTIC_CODE_MAX_LENGTH),
+          message: 'm'.repeat(DIAGNOSTIC_MESSAGE_MAX_LENGTH),
+        },
+      },
+    },
+  ];
+
+  it.each(accepted)('accepts $name', ({ input }) => {
+    const result = telemetryMessageSchema.safeParse(input);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toEqual(input);
+    }
+  });
 
   it.each(invalid)('rejects $name with $code at $path', ({ input, code, path }) => {
     const result = telemetryMessageSchema.safeParse(input);
