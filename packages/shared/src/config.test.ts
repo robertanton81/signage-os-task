@@ -27,6 +27,46 @@ function problemsOf(fn: () => unknown): string[] {
 }
 
 describe('loadConfig', () => {
+  // CLAUDE.md makes "no secrets in logs" a hard rule, and a ConfigError is the first thing a
+  // service logs on a bad deploy. Every failure shape here is invalid but non-empty.
+  it.each([
+    { name: 'an unknown log level', env: { LOG_LEVEL: 'PLACEHOLDER_SECRET' } },
+    { name: 'a non-numeric timeout', env: { MONGODB_TIMEOUT_MS: 'PLACEHOLDER_SECRET' } },
+    { name: 'an unusable write concern', env: { MONGODB_WRITE_W: 'PLACEHOLDER_SECRET' } },
+  ])('names the variable but never echoes its value for $name', ({ env }) => {
+    const problems = problemsOf(() => loadConfig(schema, { ...required, ...env }));
+    expect(problems.join(' ')).not.toContain('PLACEHOLDER_SECRET');
+    expect(problems).toHaveLength(1);
+  });
+
+  // A service runs with hundreds of unrelated variables set. If the schema were ever made strict,
+  // every one of them would be an unrecognised key and no service would start.
+  it('ignores environment variables outside the schema instead of rejecting them', () => {
+    expect(() =>
+      loadConfig(schema, { ...required, PATH: '/usr/bin', npm_package_name: 'telemetry' }),
+    ).not.toThrow();
+  });
+
+  it('reports a required variable set to only whitespace as missing', () => {
+    const problems = problemsOf(() => loadConfig(schema, { ...required, RABBITMQ_URL: '   ' }));
+    expect(problems).toEqual([expect.stringMatching(/^RABBITMQ_URL: /)]);
+  });
+
+  it('rejects a MONGODB_WRITE_W below the minimum of 1', () => {
+    const problems = problemsOf(() => loadConfig(schema, { ...required, MONGODB_WRITE_W: '0' }));
+    expect(problems).toEqual([expect.stringMatching(/^MONGODB_WRITE_W: /)]);
+  });
+
+  it('throws a ConfigError whose name survives error serialisation', () => {
+    expect.assertions(2);
+    try {
+      loadConfig(schema, {});
+    } catch (error) {
+      expect(error).toBeInstanceOf(ConfigError);
+      expect((error as ConfigError).name).toBe('ConfigError');
+    }
+  });
+
   it('applies defaults to unset and empty variables', () => {
     const config = loadConfig(schema, { ...required, LOG_LEVEL: '', AMQP_HEARTBEAT_S: '' });
     expect(config).toEqual({
@@ -47,6 +87,11 @@ describe('loadConfig', () => {
     const config = loadConfig(schema, { ...required, SHUTDOWN_TIMEOUT_MS: ' ', LOG_LEVEL: '  ' });
     expect(config.SHUTDOWN_TIMEOUT_MS).toBe(10_000);
     expect(config.LOG_LEVEL).toBe('info');
+  });
+
+  it('parses the trimmed value, so a trailing newline from a secret file never reaches a driver', () => {
+    const config = loadConfig(schema, { ...required, RABBITMQ_URL: ' amqp://rabbitmq:5672\n' });
+    expect(config.RABBITMQ_URL).toBe('amqp://rabbitmq:5672');
   });
 
   it('still honours an explicit zero rather than treating it as unset', () => {
