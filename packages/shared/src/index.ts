@@ -6,3 +6,4 @@ export * from './decode.js';
 export * from './documents.js';
 export * from './topology.js';
 export * from './collections.js';
+export * from './logger.js';
