@@ -7,11 +7,15 @@ import tseslint from 'typescript-eslint';
 export default defineConfig([
   globalIgnores(['**/dist/**', '**/node_modules/**', '**/coverage/**']),
   {
-    files: ['**/*.js'],
+    files: ['**/*.{js,mjs,cjs}'],
     extends: [js.configs.recommended],
+    rules: {
+      // Services log through the shared structured logger (CLAUDE.md "Conventions").
+      'no-console': 'error',
+    },
   },
   {
-    files: ['**/*.ts'],
+    files: ['**/*.{ts,mts,cts}'],
     extends: [js.configs.recommended, tseslint.configs.recommendedTypeChecked],
     languageOptions: {
       parserOptions: {
@@ -25,6 +29,19 @@ export default defineConfig([
       '@typescript-eslint/no-non-null-assertion': 'error',
       '@typescript-eslint/consistent-type-imports': 'error',
       '@typescript-eslint/switch-exhaustiveness-check': 'error',
+      // Three or more arguments take a single named object (shared-contract spec, decision 14).
+      'max-params': ['error', 2],
+      // pino resets any custom bindings formatter for a child created without an options object
+      // (lib/proto.js), so a raw `.child()` bypasses the redaction in `logger.ts`. Bind identity
+      // fields with `messageLogger` / `rejectedMessageLogger`, which redact before they call it.
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: "CallExpression[callee.property.name='child']",
+          message:
+            'Use messageLogger or rejectedMessageLogger from @telemetry/shared; a raw .child() does not redact its bindings.',
+        },
+      ],
       '@typescript-eslint/no-unused-vars': [
         'error',
         { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrorsIgnorePattern: '^_' },
@@ -32,8 +49,13 @@ export default defineConfig([
     },
   },
   {
+    // The one place allowed to call `.child()`: it redacts the bindings first.
+    files: ['packages/shared/src/logger.ts'],
+    rules: { 'no-restricted-syntax': 'off' },
+  },
+  {
     // Root config files are not part of any tsconfig; lint them without type information.
-    files: ['*.config.ts'],
+    files: ['*.config.{ts,mts}'],
     extends: [tseslint.configs.disableTypeChecked],
   },
   prettier,

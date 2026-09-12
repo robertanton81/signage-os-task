@@ -11,7 +11,6 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    passWithNoTests: true,
     projects: [
       {
         extends: true,
@@ -22,10 +21,13 @@ export default defineConfig({
       },
       {
         // Real RabbitMQ + MongoDB from docker compose; longer timeouts, one file at a time.
+        // Empty until step 7; the unit project must never pass with zero tests, so the
+        // allowance is scoped here and removed when the first integration file lands.
         extends: true,
         test: {
           name: 'integration',
           include: ['{apps,packages}/*/test/integration/**/*.test.ts'],
+          passWithNoTests: true,
           testTimeout: 30_000,
           hookTimeout: 60_000,
           fileParallelism: false,
