@@ -1,3 +1,43 @@
+> **STATUS: SHIPPED 2026-09-13.** Landed as four commits: the plan `8931fc4`, then one commit per task — `7c1c57f` (Task 1), `2d49902` (Task 2) and `02d3c17` (Task 3). The unchecked `- [ ]` boxes below are historical; the work is done. **Do not re-execute this plan.** If you are changing the emulator, work directly in `apps/emulator/src/`.
+>
+> **Verification (2026-09-13, at `02d3c17`):** `pnpm lint && pnpm typecheck && pnpm test` passed with 25 test files and 489 tests; 104 of them are the emulator's, 4 of those new. Each regression test was red before its fix: `seq` 3604 received twice (Task 1), only `shutting down` logged (Task 2), and `vi.waitFor` timing out with one status received (Task 3). Criteria 6 and 8 against the built code:
+>
+> - 10 000 queued frames arrived as 10 000, with 0 duplicates.
+> - With ingest unreachable, the process exited 1 011 and 1 016 ms after SIGTERM (budget 1 000 ms), after the loss warning, the summary and `stopped`.
+> - After an outbox eviction of the start `status`, 20 statuses arrived in 20 heartbeat periods.
+> - 2 devices at 200 ms gave 2 ids with 9–10 metrics each; 4 devices at 100 ms gave 4 ids with 18–19 metrics each.
+>
+> Criterion 9's search finds no stale heartbeat wording.
+>
+> **Plan-vs-reality corrections discovered during execution:**
+>
+> **Library/version drift:** none. Node 24.21.0, vitest 4.1.11, ESLint 10.10.0 and TypeScript 6.0.3 behaved as the Research section records.
+>
+> **Plan code prescriptions that needed adjustment:**
+>
+> - Task 1: the class comment of `DeviceConnection` said the outbox and the pump live in `DeviceClient`. It now names `pumpOutbox` in `device.ts`.
+> - Task 1: the identity test now waits with `target.waitForLines(queued)` before `connection.stop()`. It asserts `written === seqs.length` instead of `written === queued`, and it has its own 20 s timeout (see the review corrections below).
+> - Task 2: the harness collects the child's stderr, any stdout line that is not JSON, and a spawn error in one `diagnostics` string. The test also states `EMULATOR_SEED: '1'`.
+> - Task 3: both new tests have their own 10 s timeout, because their 4 s waits left little of vitest's default 5 s.
+>
+> **Corrections applied during review:**
+>
+> - Plan review, round 1 (REVISE, 2 blocking): the plan gained the section "Concurrent work in this checkout" (edit in place, stop on a change this task did not make, commit named paths only). It also gained the inline `max-params` directive for the three-parameter resolve hook. Round 2 passed.
+> - Task 1, test quality (blocking): the identity test relied on `stop()` winning its race against the hard-coded one-second `CLOSE_TIMEOUT_MS` destroy while the sink was still reading. It now waits for the lines first, and it failed again against the old `write()` contract.
+> - Task 1, code review (suggestion applied): the failure table's "Connection loss" row now names the second loss path: frames the socket already took are lost when the connection breaks (T39). The row used to claim that only an outbox overflow loses messages.
+> - Task 2, code review (2 blocking): the spawned child had no `'error'` listener, and `JSON.parse` in the stdout handler was unguarded. Both cases now write to `diagnostics`. Two wording fixes came with them: the texts now say that step 1 clears the tick, heartbeat and chaos timers, so only the unreferenced reconnect backoffs remain, and the spec's Research bullet names the experimental-flag trade-off.
+> - Task 3, code review (suggestion applied): the refresh bound is one tick longer when `out-of-order` chaos holds the heartbeat's own `status`. The `#armHeartbeat()` comment and decision 26 now say so.
+>
+> **Deferrals worth tracking:**
+>
+> - The `'drain'` handler in `connection.ts` does not check that the event belongs to the active socket. This is not reachable today, because `write()` checks `socket.writable`. Fix it in a future pass over `connection.ts`.
+> - `isWritable` exists in both `connection.test.ts` and `device.test.ts`. Extract it only when a third file needs it.
+> - `main.test.ts`: if `shutting down` is never logged, `lines.slice(lines.findIndex(…))` becomes `slice(-1)`. The test still fails, but with a less direct diff. Also, `refusedPort()` leaves a small window in which another process could take the released port.
+> - Three older tests in `device.test.ts` still pair a 4 s `vi.waitFor` with vitest's default 5 s test timeout.
+> - Outside its three findings, the integration-correctness review noted that a lost `diagnostic` cannot be rebuilt from later messages. Decision 12 of the consistency spec still calls such a loss harmless in general. This plan did not change that sentence.
+>
+> **Plan history below is preserved as-written for context. Treat the live code as authoritative.**
+
 # Emulator Delivery Fixes Implementation Plan
 
 **Goal:** Fix the three emulator defects that the integration-correctness review reported and this plan reproduced. First, a frame that fills the socket buffer goes out twice. Second, the process can exit in the middle of its shutdown drain without reporting what it lost. Third, a lost `status` is never replaced while a device keeps sending metrics.

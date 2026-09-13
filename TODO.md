@@ -56,6 +56,8 @@ Opraveno 2026-09-12 podle `docs/plans/2026-09-12-review-fixes-plan.md` (10 commi
 
 Hotovo 2026-09-12 podle `docs/specs/2026-09-12-emulator-design.md` a `docs/plans/2026-09-12-emulator-plan.md` (13 commitů `a1f3736..`, 98 nových testů, celkem 300).
 
+Opraveno 2026-09-13 podle `docs/plans/2026-09-13-emulator-delivery-fixes-plan.md` (4 commity `8931fc4..02d3c17`, testy emulátoru 100 → 104). Položky níže zůstávají hotové; opravy se týkaly dvojího odeslání zprávy při backpressure, ukončení procesu uprostřed shutdown drainu a obnovy ztraceného statusu během provozu.
+
 - [x] Konfigurovatelný počet zařízení a frekvence událostí (env / argumenty).
 - [x] Každé zařízení naváže dlouhodobé socketové spojení k ingest službě.
 - [x] Generování všech typů událostí v realistickém rytmu.
