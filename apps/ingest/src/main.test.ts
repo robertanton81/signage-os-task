@@ -36,6 +36,7 @@ type IngestProcess = {
 
 const children: ChildProcess[] = [];
 const servers: net.Server[] = [];
+const sockets: net.Socket[] = [];
 
 function startIngest(env: Record<string, string>): IngestProcess {
   // The real entry point, from its sources (see `test-source-hooks.ts`). A passed `env` replaces the
@@ -160,6 +161,7 @@ afterEach(async () => {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }
   children.length = 0;
+  for (const socket of sockets.splice(0)) socket.destroy();
   await Promise.all(
     servers
       .splice(0)
@@ -169,41 +171,48 @@ afterEach(async () => {
 });
 
 describe('ingest process', () => {
-  it('answers not ready while the broker is unreachable, and exits 0 once its drain has ended', async () => {
+  it('answers not ready while the broker is unreachable and while it drains, and exits 0 after the drain', async () => {
     const [broker = 0, ingestPort = 0, health = 0] = await freePorts(3);
     const ingest = startIngest(baseEnv({ broker, ingest: ingestPort, health }));
     await ingest.waitForLog('publisher reconnect scheduled');
 
-    const response = await fetch(`http://127.0.0.1:${String(health)}/readyz`);
-    expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ status: 'not_ready', reason: 'connecting' });
+    const readyz = `http://127.0.0.1:${String(health)}/readyz`;
+    const response = await fetch(readyz);
+    // Soft assertions: every outcome of this one process run is reported, even when another fails.
+    expect.soft(response.status).toBe(503);
+    expect.soft(await response.json()).toEqual({ status: 'not_ready', reason: 'connecting' });
 
     // A device connected during the outage: its socket is never resumed, so it does not notice the
     // device's close, and the drain ends at its budget (spec trade-off T28).
     const device = net.connect({ host: '127.0.0.1', port: ingestPort });
+    sockets.push(device);
     device.on('error', () => undefined);
     await ingest.waitForLog('connection accepted');
 
     const signalledAt = performance.now();
     ingest.kill('SIGTERM');
+    // The child sets its shutting-down flag in the same synchronous run that logs this line, so the
+    // flag is set before the line reaches this process; the health server stays up for the drain.
+    await ingest.waitForLog('shutting down');
+    const duringDrain = await fetch(readyz);
+    expect.soft(duringDrain.status).toBe(503);
+    expect.soft(await duringDrain.json()).toEqual({ status: 'not_ready', reason: 'shutting_down' });
     const exit = await ingest.closed;
     const lifetimeMs = performance.now() - signalledAt;
-    device.destroy();
 
     const lines = ingest.lines();
-    expect(lines[0]).toMatchObject({ msg: 'ingest starting', RABBITMQ_URL: '[redacted]' });
-    expect(JSON.stringify(lines) + ingest.diagnostics()).not.toContain(PLACEHOLDER);
+    expect.soft(lines[0]).toMatchObject({ msg: 'ingest starting', RABBITMQ_URL: '[redacted]' });
+    expect.soft(JSON.stringify(lines) + ingest.diagnostics()).not.toContain(PLACEHOLDER);
     const afterSignal = lines.slice(lines.findIndex((line) => line.msg === 'shutting down'));
-    expect(
-      afterSignal.map((line) => line.msg).filter((msg) => SHUTDOWN_LINES.includes(msg)),
-    ).toEqual(SHUTDOWN_LINES);
-    expect(lines.find((line) => line.msg === 'shutdown drain ended at its budget')).toMatchObject({
-      openConnections: 1,
-      unconfirmed: 0,
-    });
+    expect
+      .soft(afterSignal.map((line) => line.msg).filter((msg) => SHUTDOWN_LINES.includes(msg)))
+      .toEqual(SHUTDOWN_LINES);
+    expect
+      .soft(lines.find((line) => line.msg === 'shutdown drain ended at its budget'))
+      .toMatchObject({ openConnections: 1, unconfirmed: 0 });
     // Alive for the whole drain, then a clean exit.
-    expect(lifetimeMs).toBeGreaterThanOrEqual(SHUTDOWN_BUDGET_MS);
-    expect(exit).toEqual({ code: 0, signal: null });
+    expect.soft(lifetimeMs).toBeGreaterThanOrEqual(SHUTDOWN_BUDGET_MS);
+    expect.soft(exit).toEqual({ code: 0, signal: null });
   }, 15_000);
 
   it.each([
