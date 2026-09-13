@@ -25,7 +25,14 @@ export const ingestEnvSchema = z
     ...healthEnv,
     INGEST_HOST: z.string().min(1).default('0.0.0.0'),
     // Written out rather than `envInt`: `.default()` produces a ZodDefault, which has no `.max()`.
-    INGEST_PORT: z.coerce.number().int().min(1).max(65_535).default(4000),
+    // `abort` skips the cross-check below once the port is out of range, so two equal
+    // out-of-range ports are reported as range errors only, not also as a misleading clash.
+    INGEST_PORT: z.coerce
+      .number()
+      .int()
+      .min(1, { abort: true })
+      .max(65_535, { abort: true })
+      .default(4000),
     INGEST_MAX_UNCONFIRMED: envInt(1, 256),
     INGEST_MAX_UNCONFIRMED_TOTAL: envInt(1, 20_000),
     INGEST_SOCKET_IDLE_MS: envInt(1, 90_000),

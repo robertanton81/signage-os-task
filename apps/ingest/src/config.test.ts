@@ -3,8 +3,14 @@ import { describe, expect, it } from 'vitest';
 
 import { loadIngestConfig } from './config.js';
 
-/** The only required variable; every case sets it. */
+/** The only required variable; every case except the missing-URL one sets it. */
 const required = { RABBITMQ_URL: 'amqp://localhost' };
+
+const COUNTS = [
+  'INGEST_MAX_UNCONFIRMED',
+  'INGEST_MAX_UNCONFIRMED_TOTAL',
+  'INGEST_SOCKET_IDLE_MS',
+] as const;
 
 function problemsOf(fn: () => unknown): string[] {
   try {
@@ -16,6 +22,11 @@ function problemsOf(fn: () => unknown): string[] {
     throw error;
   }
   throw new Error('expected a ConfigError');
+}
+
+/** The variable each `NAME: message` problem names. */
+function namesIn(problems: readonly string[]): string[] {
+  return problems.map((problem) => problem.slice(0, problem.indexOf(':')));
 }
 
 describe('loadIngestConfig', () => {
@@ -35,9 +46,8 @@ describe('loadIngestConfig', () => {
   });
 
   it.each(['0', '65536', '4000.5'])('rejects INGEST_PORT=%s, naming the variable', (value) => {
-    expect(problemsOf(() => loadIngestConfig({ ...required, INGEST_PORT: value }))).toEqual([
-      expect.stringMatching(/^INGEST_PORT: /),
-    ]);
+    const problems = problemsOf(() => loadIngestConfig({ ...required, INGEST_PORT: value }));
+    expect(namesIn(problems)).toEqual(['INGEST_PORT']);
   });
 
   it.each([
@@ -54,30 +64,47 @@ describe('loadIngestConfig', () => {
     ]);
   });
 
-  it('compares the two ports with each other, not with a fixed number', () => {
-    const moved = loadIngestConfig({ ...required, INGEST_PORT: '8080', HEALTH_PORT: '9090' });
-    expect(moved.INGEST_PORT).toBe(8080);
+  it('accepts INGEST_PORT 8080 once HEALTH_PORT has moved away from it', () => {
+    expect(
+      loadIngestConfig({ ...required, INGEST_PORT: '8080', HEALTH_PORT: '9090' }),
+    ).toMatchObject({ INGEST_PORT: 8080, HEALTH_PORT: 9090 });
+  });
+
+  it('rejects the ports once both point at the same moved value', () => {
     expect(
       problemsOf(() => loadIngestConfig({ ...required, INGEST_PORT: '9090', HEALTH_PORT: '9090' })),
     ).toEqual(['INGEST_PORT: must differ from HEALTH_PORT']);
   });
 
+  it.each(['0', '70000'])(
+    'reports two equal out-of-range ports (%s) as range errors only, not also as a clash',
+    (value) => {
+      const problems = problemsOf(() =>
+        loadIngestConfig({ ...required, INGEST_PORT: value, HEALTH_PORT: value }),
+      );
+      expect(namesIn(problems).sort()).toEqual(['HEALTH_PORT', 'INGEST_PORT']);
+    },
+  );
+
   it('names a missing RABBITMQ_URL', () => {
-    expect(problemsOf(() => loadIngestConfig({}))).toEqual([
-      expect.stringMatching(/^RABBITMQ_URL: /),
+    expect(namesIn(problemsOf(() => loadIngestConfig({})))).toEqual(['RABBITMQ_URL']);
+  });
+
+  it('reads the environment through the shared loader, so a string value arrives trimmed', () => {
+    // Coercion already trims a number, so only a string shows whether `loadConfig` ran: a direct
+    // `ingestEnvSchema.parse(env)` would keep the spaces.
+    expect(loadIngestConfig({ ...required, INGEST_HOST: ' 10.0.0.5 ' }).INGEST_HOST).toBe(
+      '10.0.0.5',
+    );
+  });
+
+  it.each([...COUNTS])('rejects %s=0, naming the variable', (name) => {
+    expect(namesIn(problemsOf(() => loadIngestConfig({ ...required, [name]: '0' })))).toEqual([
+      name,
     ]);
   });
 
-  it('parses the trimmed value', () => {
-    expect(loadIngestConfig({ ...required, INGEST_PORT: ' 4001 ' }).INGEST_PORT).toBe(4001);
+  it.each([...COUNTS])('accepts %s=1, the documented minimum', (name) => {
+    expect(loadIngestConfig({ ...required, [name]: '1' })).toMatchObject({ [name]: 1 });
   });
-
-  it.each(['INGEST_MAX_UNCONFIRMED', 'INGEST_MAX_UNCONFIRMED_TOTAL', 'INGEST_SOCKET_IDLE_MS'])(
-    'rejects %s=0, naming the variable',
-    (name) => {
-      expect(problemsOf(() => loadIngestConfig({ ...required, [name]: '0' }))).toEqual([
-        expect.stringMatching(new RegExp(`^${name}: `)),
-      ]);
-    },
-  );
 });
