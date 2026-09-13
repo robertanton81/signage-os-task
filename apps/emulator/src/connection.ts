@@ -29,8 +29,8 @@ const CLOSE_TIMEOUT_MS = 1_000;
  * attempt))` (emulator spec, decision 17; `backoffDelay` in the shared package explains the choice).
  * `attempt` is 0-based and resets on a successful connect.
  */
-export const BACKOFF_BASE_MS = 500;
-export const BACKOFF_MAX_MS = 10_000;
+const BACKOFF_BASE_MS = 500;
+const BACKOFF_MAX_MS = 10_000;
 
 export type ConnectionState =
   | { name: 'idle' }

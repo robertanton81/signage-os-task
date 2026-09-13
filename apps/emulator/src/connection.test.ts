@@ -2,7 +2,7 @@ import { createLogger, encodeFrame, type Logger, type TelemetryMessage } from '@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DeviceConnection } from './connection.js';
-import { createRandom } from './random.js';
+import { createRandom, type Random } from './random.js';
 import { startTestSink, type TestSink } from './test-sink.js';
 
 function silentLogger(): Logger {
@@ -24,6 +24,17 @@ function frame(seq: number): Buffer {
     payload: { temperatureC: 40, cpuPercent: 10, ramPercent: 50 },
   };
   return encodeFrame(message);
+}
+
+/** A Random whose every draw is `value`, so a retry delay is a pure function of the attempt. */
+function fixedRandom(value: number): Random {
+  return {
+    float: () => value,
+    int: (min) => min,
+    bool: () => false,
+    pick: (values) => values[0],
+    range: (min, max) => min + value * (max - min),
+  };
 }
 
 const open: { sinks: TestSink[]; connections: DeviceConnection[] } = { sinks: [], connections: [] };
@@ -232,5 +243,52 @@ describe('DeviceConnection', () => {
     await vi.waitFor(() => {
       expect(connection.state.name).toBe('backoff');
     });
+  });
+
+  it('retries on the emulator schedule, one seeded draw per retry', async () => {
+    // A refused port fails every attempt at once, so each delay comes from the schedule alone:
+    // 500 ms doubling to a 10 s cap (emulator spec, decision 17). A draw of 0.01 keeps six retries
+    // under 300 ms and gives every ceiling a distinct delay, so swapping the base and the cap, or
+    // passing `Math.random` instead of the seeded stream, changes the numbers below.
+    const temporary = await startTestSink();
+    const { port } = temporary;
+    await temporary.close();
+
+    // `vi.waitFor` asks `vi.isFakeTimers()` on every poll, and the first such call in a worker builds
+    // vitest's fake-timer controller, which probes the CURRENT global with `setTimeout(NOOP, 0)`
+    // (found with a stack capture). Building it before the spy exists keeps that probe out of the
+    // recorded calls, whichever test in this file happens to run first.
+    vi.isFakeTimers();
+    const timeouts = vi.spyOn(globalThis, 'setTimeout');
+    try {
+      const connection = new DeviceConnection({
+        deviceId: 'dev-0001',
+        hosts: [{ host: '127.0.0.1', port }],
+        random: fixedRandom(0.01),
+        logger: silentLogger(),
+        onWritable: () => undefined,
+      });
+      open.connections.push(connection);
+      connection.start();
+
+      // The backoff state holds the NEXT attempt, so 6 means the sixth delay has been scheduled.
+      await vi.waitFor(
+        () => {
+          const state = connection.state;
+          expect(state.name === 'backoff' ? state.attempt : 0).toBeGreaterThanOrEqual(6);
+        },
+        { timeout: 5_000 },
+      );
+      await connection.stop();
+
+      // `vi.waitFor` itself polls with the timers vitest saved at worker setup, so with the probe
+      // above out of the way every recorded call is a retry the connection scheduled.
+      const delays = timeouts.mock.calls
+        .slice(0, 6)
+        .map(([, ms]) => Math.round((ms ?? Number.NaN) * 1_000) / 1_000);
+      expect(delays).toEqual([5, 10, 20, 40, 80, 100]);
+    } finally {
+      timeouts.mockRestore();
+    }
   });
 });

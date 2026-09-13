@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { backoffDelay } from './backoff.js';
 
-// The reconnect schedule both services use: 500 ms doubling up to 10 s (consistency spec, decision 14).
+// The reconnect schedule both services use, 500 ms doubling up to 10 s: the consistency spec's
+// "Ingest" section for ingest, emulator spec decision 17 for the emulator.
 const BASE_MS = 500;
 const MAX_MS = 10_000;
 
