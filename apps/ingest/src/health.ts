@@ -6,6 +6,14 @@ import type { PublisherState } from './publisher-state.js';
 
 export const READINESS_PATH = '/readyz';
 
+/**
+ * Inactivity bound for every connection to the endpoint, also one that never sends a request.
+ * Node bounds only a request in progress (`headersTimeout` 60 s, `requestTimeout` 300 s) and an
+ * idle keep-alive connection (`keepAliveTimeout` 5 s); `server.timeout` defaults to 0, no timeout
+ * (Node 24.21.0 http docs). A socket idle for this long is destroyed; a test pins that.
+ */
+export const HEALTH_IDLE_TIMEOUT_MS = 10_000;
+
 export type ReadinessReport =
   { ready: true } | { ready: false; reason: 'connecting' | 'blocked' | 'shutting_down' };
 
@@ -39,9 +47,11 @@ export type HealthServer = {
 
 export type HealthServerOptions = {
   port: number;
-  /** Called on every request, so the answer always reflects the current state. */
+  /** Called on every `GET /readyz` request, so the answer always reflects the current state. */
   report: () => ReadinessReport;
   logger: Logger;
+  /** Defaults to HEALTH_IDLE_TIMEOUT_MS; only the tests shorten it. */
+  idleTimeoutMs?: number;
 };
 
 /**
@@ -54,6 +64,7 @@ export function startHealthServer({
   port,
   report,
   logger,
+  idleTimeoutMs = HEALTH_IDLE_TIMEOUT_MS,
 }: HealthServerOptions): Promise<HealthServer> {
   const server = http.createServer((request, response) => {
     const path = (request.url ?? '').split('?', 1)[0];
@@ -61,6 +72,8 @@ export function startHealthServer({
       send(response, { status: 404, body: {} });
       return;
     }
+    // `report` reads in-process state the types already guarantee, so a throw here is a programmer
+    // error and is left to end the process through the shared lifecycle handler.
     const current = report();
     if (current.ready) {
       send(response, { status: 200, body: { status: 'ready' } });
@@ -69,13 +82,17 @@ export function startHealthServer({
     }
   });
 
+  server.timeout = idleTimeoutMs;
+
   return new Promise((resolve, reject) => {
     server.once('error', reject);
+    // No host: the unspecified IPv6 address `::` when IPv6 is available, otherwise `0.0.0.0` (Node
+    // net docs). A bind failure rejects, and the entry point stops the instance.
     server.listen(port, () => {
       server.off('error', reject);
-      // After startup an error is logged, not thrown: a failed accept must not end the process.
+      // After startup an error is logged, not thrown: a failed accept is recoverable, so `warn`.
       server.on('error', (error) => {
-        logger.error({ err: error }, 'health server error');
+        logger.warn({ err: error }, 'health server error');
       });
       const address = server.address();
       const bound = typeof address === 'object' && address !== null ? address.port : port;

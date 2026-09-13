@@ -66,7 +66,7 @@ describe('readinessReport', () => {
     { key: 'ready', expected: { ready: true } },
     { key: 'ready-blocked', expected: { ready: false, reason: 'blocked' } },
     { key: 'stopped', expected: { ready: false, reason: 'connecting' } },
-  ])('reports $expected for $key while running', ({ key, expected }) => {
+  ])('reports the expected answer for $key while running', ({ key, expected }) => {
     const publisherState = STATES[key];
     if (publisherState === undefined) throw new Error(`unknown state ${key}`);
 
@@ -134,16 +134,29 @@ describe('startHealthServer', () => {
     expect(response.status).toBe(200);
   });
 
-  it('answers 404 with an empty JSON body to another path and to another method', async () => {
+  it.each([
+    { method: 'GET', path: '/healthz' },
+    { method: 'POST', path: '/readyz' },
+    { method: 'PUT', path: '/readyz' },
+  ])('answers $method $path with 404 and an empty JSON body', async ({ method, path }) => {
     const health = await start(() => ({ ready: true }));
 
-    const otherPath = await fetch(`http://127.0.0.1:${health.port}/healthz`);
-    const otherPathBody: unknown = await otherPath.json();
-    const otherMethod = await fetch(readyz(health), { method: 'POST' });
-    const otherMethodBody: unknown = await otherMethod.json();
+    const response = await fetch(`http://127.0.0.1:${health.port}${path}`, { method });
+    const body: unknown = await response.json();
 
-    expect([otherPath.status, otherMethod.status]).toEqual([404, 404]);
-    expect([otherPathBody, otherMethodBody]).toEqual([{}, {}]);
+    expect(response.status).toBe(404);
+    expect(response.headers.get('content-type')).toBe('application/json');
+    expect(body).toEqual({});
+  });
+
+  it('answers HEAD /readyz with 404, because the probe is a GET', async () => {
+    const health = await start(() => ({ ready: true }));
+
+    const response = await fetch(readyz(health), { method: 'HEAD' });
+    await response.text();
+
+    expect(response.status).toBe(404);
+    expect(response.headers.get('content-type')).toBe('application/json');
   });
 
   it('rejects when the port is already in use, so the entry point can fail fast', async () => {
@@ -160,9 +173,10 @@ describe('startHealthServer', () => {
     client.on('error', () => undefined);
     await once(client, 'connect');
 
-    // One complete request, then a second one whose headers never end. When the first response
-    // arrives, the server has begun parsing the second request, so this connection is active, not
-    // idle: `server.close()` alone would wait for it (probe .local/research/2026-09-13-http-close-probe.mjs).
+    // One complete request, then a second one whose headers never end, in one small write. On
+    // loopback that write arrives as one chunk (true in practice, not guaranteed by TCP), so when the
+    // first response arrives the server has begun parsing the second request: the connection is
+    // active, not idle, and `server.close()` alone would wait for it (probe in .local/research).
     const firstResponse = once(client, 'data');
     client.write(
       'GET /readyz HTTP/1.1\r\nHost: localhost\r\n\r\nGET /readyz HTTP/1.1\r\nHost: localhost\r\n',
@@ -180,5 +194,39 @@ describe('startHealthServer', () => {
 
     expect(outcome).toBe('closed');
     await clientClosed;
+  }, 10_000);
+
+  it('frees the port once close() has resolved', async () => {
+    const health = await start(() => ({ ready: true }));
+    const { port } = health;
+
+    await health.close();
+
+    const reopened = await startHealthServer({ port, report: () => ({ ready: true }), logger });
+    started.push(reopened);
+    expect(reopened.port).toBe(port);
+  });
+
+  it('closes a connection that sends nothing once the idle timeout runs out', async () => {
+    const health = await startHealthServer({
+      port: 0,
+      report: () => ({ ready: true }),
+      logger,
+      idleTimeoutMs: 50,
+    });
+    started.push(health);
+    const client = net.connect(health.port, '127.0.0.1');
+    client.on('error', () => undefined);
+    await once(client, 'connect');
+
+    // A bound, not a sleep: the assertion is that the server closes the socket.
+    const abort = new AbortController();
+    const outcome = await Promise.race([
+      once(client, 'close').then(() => 'closed by the server'),
+      delay(2_000, 'still open', { signal: abort.signal }).catch(() => 'aborted'),
+    ]);
+    abort.abort();
+
+    expect(outcome).toBe('closed by the server');
   });
 });
