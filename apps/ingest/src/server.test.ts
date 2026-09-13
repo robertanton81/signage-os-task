@@ -190,6 +190,29 @@ describe('IngestServer', () => {
     expect(server.stats()).toMatchObject({ open: 0, rejected: 1 });
   });
 
+  it('drops a valid message that arrives in the same read as a binary one, after deciding to close', async () => {
+    // A plain `ws.close()` does not stop `ws` from parsing the rest of the read, unlike a protocol
+    // error, and one read can hold several messages. Sent while the connection is paused, the two
+    // messages are read together once the publisher is ready.
+    const { server, publisher, logs, connect } = await startServer({ ready: false });
+    const device = await connect();
+    const connection = await onlyConnection(server);
+    device.sendBinary(Buffer.from([1, 2, 3]));
+    device.sendMessage(exampleMessages.status);
+    await vi.waitFor(() => {
+      expect(device.ws.bufferedAmount).toBe(0);
+    });
+
+    publisher.setReady(true);
+
+    expect((await device.closed).code).toBe(UNSUPPORTED_DATA);
+    await connectionsOf(server, 0);
+    expect(publisher.requests).toEqual([]);
+    expect([connection.received, connection.rejected]).toEqual([0, 1]);
+    expect(linesWith(logs, 'binary message rejected')).toHaveLength(1);
+    expect(linesWith(logs, 'message rejected')).toEqual([]);
+  });
+
   it('closes a connection whose message exceeds the limit, after publishing the one before it', async () => {
     const { server, publisher, logs, connect } = await startServer();
     const device = await connect();
