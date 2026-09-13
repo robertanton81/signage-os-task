@@ -113,6 +113,13 @@ export class Fleet {
    * the connection's writable callback, so this loop calls the pump and reads `outboxLength` until
    * both conditions are settled. Bounded on both ends — it cannot hang, and it does not wait
    * longer than it has to.
+   *
+   * The poll timer is the one timer here that stays referenced, on purpose. A pending promise does
+   * not keep Node running. Step 1 has cleared the tick, heartbeat and chaos timers and the summary
+   * interval, so the only other timers left are the devices' reconnect backoffs, and those are
+   * unreferenced. With every device in backoff and no socket open, an unreferenced poll let the
+   * process exit in the middle of the drain — no loss warning, no summary, exit code 0. The budget
+   * bounds how long this timer keeps the process up.
    */
   #drain(): Promise<void> {
     const deadline = Date.now() + this.#config.SHUTDOWN_TIMEOUT_MS;
@@ -124,7 +131,7 @@ export class Fleet {
           resolve();
           return;
         }
-        setTimeout(check, DRAIN_POLL_MS).unref();
+        setTimeout(check, DRAIN_POLL_MS);
       };
       check();
     });
