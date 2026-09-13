@@ -82,9 +82,35 @@ export const shutdownEnv = {
   SHUTDOWN_TIMEOUT_MS: envInt(0, 10_000),
 };
 
+/**
+ * True when `value` parses with the WHATWG URL parser and names an AMQP protocol. amqplib (since
+ * 1.0.2) parses a string URL with `new URL()` and rejects every other protocol (`lib/connect.js`),
+ * so this check uses the same parser and cannot disagree with the client (ingest spec, decision 18).
+ * A typo then fails at startup, naming the variable, instead of in an endless reconnect loop.
+ * `MONGODB_URL` is not checked this way: a MongoDB connection string may list several hosts, which
+ * the URL parser rejects (shared-contract spec, decision 6).
+ */
+function isAmqpUrl(value: string): boolean {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === 'amqp:' || protocol === 'amqps:';
+  } catch {
+    return false;
+  }
+}
+
 export const rabbitmqEnv = {
-  RABBITMQ_URL: z.string().min(1),
+  // Fixed message text: the value can carry a password, and a ConfigError is logged on a bad deploy.
+  RABBITMQ_URL: z.string().min(1).refine(isAmqpUrl, 'must be an amqp:// or amqps:// URL'),
   AMQP_HEARTBEAT_S: envInt(1, 10),
+};
+
+/**
+ * Port of the HTTP readiness endpoint (ingest spec, decision 17); processing reuses it in step 5.
+ * Written out rather than `envInt`, because a `.max()` cannot follow `.default()`.
+ */
+export const healthEnv = {
+  HEALTH_PORT: z.coerce.number().int().min(1).max(65_535).default(8080),
 };
 
 export const mongodbEnv = {

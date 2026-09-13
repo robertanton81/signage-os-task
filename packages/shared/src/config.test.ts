@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   ConfigError,
   envInt,
+  healthEnv,
   loadConfig,
   logLevelEnv,
   mongodbEnv,
@@ -188,5 +189,49 @@ describe('envInt', () => {
     expect(problemsOf(() => loadConfig(fragment, { N: '2.5' }))).toEqual([
       expect.stringMatching(/^N: /),
     ]);
+  });
+});
+
+describe('rabbitmqEnv', () => {
+  const rabbitmq = z.object({ ...rabbitmqEnv });
+
+  // The client parses the URL with the same WHATWG parser and accepts only these two protocols
+  // (ingest spec, decision 18), so a typo fails here, naming the variable, instead of turning
+  // into an endless reconnect loop. The value can carry a password, so it is never echoed.
+  it.each([
+    { name: 'a URL with another protocol', value: 'http://guest:PLACEHOLDER_SECRET@rabbitmq:5672' },
+    { name: 'a value that is not a URL at all', value: 'PLACEHOLDER_SECRET is not a url' },
+  ])('rejects $name, naming RABBITMQ_URL and never echoing the value', ({ value }) => {
+    const problems = problemsOf(() => loadConfig(rabbitmq, { RABBITMQ_URL: value }));
+    expect(problems).toEqual([expect.stringMatching(/^RABBITMQ_URL: /)]);
+    expect(problems.join(' ')).not.toContain('PLACEHOLDER_SECRET');
+  });
+
+  it.each(['amqp://rabbitmq:5672', 'amqps://user:pw@host:5671/vhost'])(
+    'accepts %s and returns it unchanged',
+    (value) => {
+      expect(loadConfig(rabbitmq, { RABBITMQ_URL: value }).RABBITMQ_URL).toBe(value);
+    },
+  );
+});
+
+describe('healthEnv', () => {
+  const health = z.object({ ...healthEnv });
+
+  it('defaults HEALTH_PORT to 8080', () => {
+    expect(loadConfig(health, {}).HEALTH_PORT).toBe(8080);
+  });
+
+  it.each(['0', '65536'])('rejects HEALTH_PORT=%s, naming the variable', (value) => {
+    expect(problemsOf(() => loadConfig(health, { HEALTH_PORT: value }))).toEqual([
+      expect.stringMatching(/^HEALTH_PORT: /),
+    ]);
+  });
+
+  it.each([
+    { value: '1', port: 1 },
+    { value: '65535', port: 65_535 },
+  ])('accepts the boundary port $value', ({ value, port }) => {
+    expect(loadConfig(health, { HEALTH_PORT: value }).HEALTH_PORT).toBe(port);
   });
 });
