@@ -48,12 +48,31 @@ describe('toPublishArgs', () => {
     expect(decodeTelemetryMessage(content.toString('utf8'))).toEqual({ ok: true, message });
   });
 
-  it('floors the AMQP timestamp to whole seconds and keeps the milliseconds in the header', () => {
-    // 999 ms past the second: rounding would give the next second, flooring must not.
-    const receivedAt = 1_757_800_000_999;
-    const { options } = toPublishArgs(exampleMessages.metrics, receivedAt);
+  it('keeps a multi-byte UTF-8 character in a text field intact', () => {
+    // 'ř' is two bytes in UTF-8 and one in latin1, so a changed encoding argument fails here. Every
+    // other fixture in this file is ASCII, where the two encodings agree (as in framing.test.ts).
+    const message: TelemetryMessageOf<'diagnostic'> = {
+      ...exampleMessages.diagnostic,
+      payload: { severity: 'warning', code: 'E_OVERHEAT', message: 'p\u0159eh\u0159\u00e1t\u00ed' },
+    };
+    const { content } = toPublishArgs(message, RECEIVED_AT);
 
-    expect(options.timestamp).toBe(1_757_800_000);
-    expect(options.headers).toEqual({ 'x-received-at': 1_757_800_000_999 });
+    expect(content.includes(Buffer.from([0xc5, 0x99]))).toBe(true);
+    expect(decodeTelemetryMessage(content.toString('utf8'))).toEqual({ ok: true, message });
+  });
+
+  // 999 ms past the second: rounding would give the next second, flooring must not.
+  const LATE_IN_THE_SECOND = 1_757_800_000_999;
+
+  it('floors the AMQP timestamp to whole seconds', () => {
+    expect(toPublishArgs(exampleMessages.metrics, LATE_IN_THE_SECOND).options.timestamp).toBe(
+      1_757_800_000,
+    );
+  });
+
+  it('keeps the exact milliseconds in the x-received-at header', () => {
+    expect(toPublishArgs(exampleMessages.metrics, LATE_IN_THE_SECOND).options.headers).toEqual({
+      'x-received-at': 1_757_800_000_999,
+    });
   });
 });
