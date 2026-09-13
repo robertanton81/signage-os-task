@@ -11,6 +11,11 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
-    "@telemetry/shared": "workspace:*"
+    "@telemetry/shared": "workspace:*",
+    "amqplib": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "vitest": "catalog:"
   }
 }

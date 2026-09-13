@@ -6,6 +6,7 @@ packages:
 catalog:
   '@eslint/js': 10.0.1
   '@types/node': 24.13.3
+  amqplib: 2.0.1
   eslint: 10.10.0
   eslint-config-prettier: 10.1.8
   pino: 10.3.1
