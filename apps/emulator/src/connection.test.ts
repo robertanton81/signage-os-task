@@ -2,6 +2,7 @@ import http from 'node:http';
 
 import { createLogger, encodeMessage, type Logger, type TelemetryMessage } from '@telemetry/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { WebSocket } from 'ws';
 
 import { DeviceConnection, socketUrl } from './connection.js';
 import { createRandom, type Random } from './random.js';
@@ -335,7 +336,10 @@ describe('DeviceConnection', () => {
     // 198.51.100.0/24 is TEST-NET-2 (RFC 5737): reserved for documentation and not routed, so the
     // SYN is dropped rather than refused. That is the black-hole case — no 'error', no 'close' —
     // which without a handshake timeout leaves the device in `connecting` for the OS SYN budget.
-    // The timeout is overridden low so the test does not wait ten seconds for it.
+    // The timeout is overridden low so the test does not wait ten seconds for it. This relies on
+    // the environment dropping the packets: a firewall that answers with a reset instead would
+    // turn the timeout error below into ECONNREFUSED or ENETUNREACH, and the test would fail for a
+    // reason unrelated to the connection code.
     const { logger, lines } = collectingLogger();
     const connection = new DeviceConnection({
       deviceId: 'dev-0001',
@@ -364,11 +368,12 @@ describe('DeviceConnection', () => {
   });
 
   it('closes within its own deadline even when the peer never responds', async () => {
+    const { logger, lines } = collectingLogger();
     const connection = new DeviceConnection({
       deviceId: 'dev-0001',
       hosts: [{ host: '198.51.100.1', port: 9 }],
       random: createRandom(3),
-      logger: silentLogger(),
+      logger,
       onWritable: () => undefined,
       connectTimeoutMs: 30_000,
     });
@@ -384,9 +389,17 @@ describe('DeviceConnection', () => {
     // The handshake is aborted at once, not after the 30 s handshake timeout above.
     expect(Date.now() - startedAt).toBeLessThan(3_000);
     expect(connection.state.name).toBe('stopped');
+    // The abort raises an error on the socket; once stopped it is noise, logged at debug only.
+    await vi.waitFor(() => {
+      expect(lines().filter((line) => line.msg === 'device socket error')).toHaveLength(1);
+    });
+    expect(lines().filter((line) => line.msg === 'device socket error')[0]).toMatchObject({
+      level: 20,
+      err: { message: 'WebSocket was closed before the connection was established' },
+    });
   });
 
-  it('goes to backoff when the target refuses the connection, and never throws', async () => {
+  it('goes to backoff when the target refuses the connection', async () => {
     // Take a port, then release it: connecting there is refused rather than hanging.
     const temporary = await startTestSink();
     const { port } = temporary;
@@ -425,6 +438,94 @@ describe('DeviceConnection', () => {
     const [closed] = lines().filter((line) => line.msg === 'device socket closed, reconnecting');
     expect(closed).toMatchObject({ attempt: 0, closeCode: 1006 });
   });
+
+  it('does not connect when stopped during a DNS lookup that answers afterwards', async () => {
+    // `stop()` can run while `#resolveAndConnect` awaits the lookups; the check after the await
+    // is what keeps a stopped device from opening a socket the caller will never close.
+    const target = await sink();
+    let answer: ((value: { address: string }[]) => void) | undefined;
+    const connection = new DeviceConnection({
+      deviceId: 'dev-0001',
+      hosts: [{ host: 'late.test', port: target.port }],
+      random: createRandom(3),
+      logger: silentLogger(),
+      onWritable: () => undefined,
+      lookup: () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    });
+    open.connections.push(connection);
+    connection.start();
+    expect(connection.state.name).toBe('resolving');
+
+    await connection.stop();
+    expect(answer).toBeDefined();
+    answer?.([{ address: '127.0.0.1' }]);
+    // The lookup has answered and would have connected; give a connect attempt time to show up.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(connection.state.name).toBe('stopped');
+    expect(target.connectionCount()).toBe(0);
+  });
+
+  it('stops within its own deadline when the peer never reads the close frame', async () => {
+    const target = await sink();
+    const connection = connect(target.port);
+    connection.start();
+    await vi.waitFor(() => {
+      expect(connection.isConnected).toBe(true);
+    });
+    // A paused peer reads nothing, so it never replies to the close frame and the closing
+    // handshake cannot finish; only the cap ends the wait.
+    target.pauseConnections();
+
+    const startedAt = performance.now();
+    await connection.stop();
+    const elapsed = performance.now() - startedAt;
+    expect(elapsed).toBeGreaterThanOrEqual(900);
+    expect(elapsed).toBeLessThan(3_000);
+    expect(connection.state.name).toBe('stopped');
+  });
+
+  it('does not reopen the gate from the failed callback of a terminated socket, only from the next connection', async () => {
+    // A gated send whose socket is destroyed calls back with an error. Without the error check,
+    // that callback would mark the dead connection writable and run the pump into it.
+    const target = await sink();
+    const seen: string[] = [];
+    const connection = connect(target.port, () => {
+      const state = connection.state;
+      seen.push(
+        state.name === 'connected'
+          ? `connected:${state.socket.readyState === WebSocket.OPEN ? 'open' : 'not-open'}`
+          : state.name,
+      );
+    });
+    connection.start();
+    await vi.waitFor(() => {
+      expect(connection.isConnected).toBe(true);
+    });
+    target.pauseConnections();
+    const chunk = 'a'.repeat(16 * 1024);
+    let taken = 0;
+    while (isWritable(connection) && taken < 4_000) {
+      connection.write(chunk);
+      taken += 1;
+    }
+    expect(isWritable(connection)).toBe(false);
+    const before = seen.length;
+
+    connection.dropConnection();
+    // The reconnect opens a new socket; its 'open' is the next legitimate writable signal.
+    await vi.waitFor(
+      () => {
+        expect(target.connectionCount()).toBe(2);
+        expect(connection.isConnected).toBe(true);
+      },
+      { timeout: 5_000 },
+    );
+    expect(seen.slice(before)).toEqual(['connected:open']);
+    target.resumeConnections();
+  }, 20_000);
 
   it('retries on the emulator schedule, one seeded draw per retry', async () => {
     // A refused port fails every attempt at once, so each delay comes from the schedule alone:
