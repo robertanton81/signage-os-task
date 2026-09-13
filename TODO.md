@@ -68,14 +68,16 @@ Opraveno 2026-09-13 podle `docs/plans/2026-09-13-emulator-delivery-fixes-plan.md
 
 ## 4. Socket ingest služba
 
-- [ ] Socket server přijímající dlouhodobá spojení od zařízení.
-- [ ] Parsování a validace příchozích zpráv sdíleným schématem. Nevalidní zprávu odmítnout a zalogovat, nikoli shodit spojení nebo službu.
-- [ ] Publikace validních zpráv do RabbitMQ včetně metadat potřebných pro směrování a pořadí.
-- [ ] Bezstavovost – žádný stav vázaný na instanci, aby šlo škálovat horizontálně.
-- [ ] Odolnost vůči výpadku RabbitMQ (reconnect, chování vůči zařízením během výpadku).
-- [ ] Graceful shutdown: dokončit rozpracované zprávy, korektně zavřít spojení.
-- [ ] Health/readiness signál pro Docker Compose.
-- [ ] Unit testy: validace, mapování zprávy do fronty.
+Hotovo 2026-09-13 podle `docs/specs/2026-09-13-ingest-design.md` a `docs/plans/2026-09-13-ingest-plan.md` (30 commitů `56c8dc7..`, 209 testů ingest, celkem 538). Skriptovaný běh proti RabbitMQ 4.3 prošel všemi šesti scénáři; výsledky jsou v hlavičce plánu.
+
+- [x] Socket server přijímající dlouhodobá spojení od zařízení.
+- [x] Parsování a validace příchozích zpráv sdíleným schématem. Nevalidní zprávu odmítnout a zalogovat, nikoli shodit spojení nebo službu.
+- [x] Publikace validních zpráv do RabbitMQ včetně metadat potřebných pro směrování a pořadí.
+- [x] Bezstavovost – žádný stav vázaný na instanci, aby šlo škálovat horizontálně.
+- [x] Odolnost vůči výpadku RabbitMQ (reconnect, chování vůči zařízením během výpadku).
+- [x] Graceful shutdown: dokončit rozpracované zprávy, korektně zavřít spojení.
+- [x] Health/readiness signál pro Docker Compose.
+- [x] Unit testy: validace, mapování zprávy do fronty.
 
 ## 5. Processing service
 
