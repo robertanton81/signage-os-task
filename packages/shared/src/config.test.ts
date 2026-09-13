@@ -197,14 +197,24 @@ describe('rabbitmqEnv', () => {
 
   // The client parses the URL with the same WHATWG parser and accepts only these two protocols
   // (ingest spec, decision 18), so a typo fails here, naming the variable, instead of turning
-  // into an endless reconnect loop. The value can carry a password, so it is never echoed.
+  // into an endless reconnect loop. The value can carry a password, so the message is fixed text:
+  // every rejection must produce exactly this line and nothing built from the value.
   it.each([
     { name: 'a URL with another protocol', value: 'http://guest:PLACEHOLDER_SECRET@rabbitmq:5672' },
     { name: 'a value that is not a URL at all', value: 'PLACEHOLDER_SECRET is not a url' },
-  ])('rejects $name, naming RABBITMQ_URL and never echoing the value', ({ value }) => {
-    const problems = problemsOf(() => loadConfig(rabbitmq, { RABBITMQ_URL: value }));
-    expect(problems).toEqual([expect.stringMatching(/^RABBITMQ_URL: /)]);
-    expect(problems.join(' ')).not.toContain('PLACEHOLDER_SECRET');
+    // These two start with "amqp", so they tell real URL parsing apart from a prefix check.
+    {
+      name: 'a protocol that only shares the amqp prefix',
+      value: 'amqpx://guest:PLACEHOLDER_SECRET@rabbitmq:5672',
+    },
+    {
+      name: 'an amqp prefix without the scheme separator',
+      value: 'amqp//guest:PLACEHOLDER_SECRET@rabbitmq:5672',
+    },
+  ])('rejects $name with the fixed message', ({ value }) => {
+    expect(problemsOf(() => loadConfig(rabbitmq, { RABBITMQ_URL: value }))).toEqual([
+      'RABBITMQ_URL: must be an amqp:// or amqps:// URL',
+    ]);
   });
 
   it.each(['amqp://rabbitmq:5672', 'amqps://user:pw@host:5671/vhost'])(
@@ -222,11 +232,14 @@ describe('healthEnv', () => {
     expect(loadConfig(health, {}).HEALTH_PORT).toBe(8080);
   });
 
-  it.each(['0', '65536'])('rejects HEALTH_PORT=%s, naming the variable', (value) => {
-    expect(problemsOf(() => loadConfig(health, { HEALTH_PORT: value }))).toEqual([
-      expect.stringMatching(/^HEALTH_PORT: /),
-    ]);
-  });
+  it.each(['0', '65536', '8080.5', 'abc'])(
+    'rejects HEALTH_PORT=%s, naming the variable',
+    (value) => {
+      expect(problemsOf(() => loadConfig(health, { HEALTH_PORT: value }))).toEqual([
+        expect.stringMatching(/^HEALTH_PORT: /),
+      ]);
+    },
+  );
 
   it.each([
     { value: '1', port: 1 },

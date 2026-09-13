@@ -83,12 +83,13 @@ export const shutdownEnv = {
 };
 
 /**
- * True when `value` parses with the WHATWG URL parser and names an AMQP protocol. amqplib (since
- * 1.0.2) parses a string URL with `new URL()` and rejects every other protocol (`lib/connect.js`),
- * so this check uses the same parser and cannot disagree with the client (ingest spec, decision 18).
- * A typo then fails at startup, naming the variable, instead of in an endless reconnect loop.
- * `MONGODB_URL` is not checked this way: a MongoDB connection string may list several hosts, which
- * the URL parser rejects (shared-contract spec, decision 6).
+ * True when `value` parses with the WHATWG URL parser and names an AMQP protocol. amqplib parses
+ * a string URL with `new URL()` since 1.0.2 (change log: "Replace url-parse with WHATWG URL API")
+ * and rejects every other protocol (`lib/connect.js`), so this check uses the same parser and
+ * cannot disagree with the client (ingest spec, decision 18). A typo then fails at startup, naming
+ * the variable, instead of in an endless reconnect loop. `MONGODB_URL` is not checked this way: a
+ * MongoDB connection string may list several hosts, which the URL parser rejects (shared-contract
+ * spec, decision 6).
  */
 function isAmqpUrl(value: string): boolean {
   try {
