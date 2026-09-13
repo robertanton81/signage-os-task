@@ -1,7 +1,9 @@
-import { createLogger, encodeFrame, type Logger, type TelemetryMessage } from '@telemetry/shared';
+import http from 'node:http';
+
+import { createLogger, encodeMessage, type Logger, type TelemetryMessage } from '@telemetry/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { DeviceConnection } from './connection.js';
+import { DeviceConnection, socketUrl } from './connection.js';
 import { createRandom, type Random } from './random.js';
 import { startTestSink, type TestSink } from './test-sink.js';
 
@@ -13,7 +15,22 @@ function silentLogger(): Logger {
   });
 }
 
-function frame(seq: number): Buffer {
+/** A logger whose lines the test can read. */
+function collectingLogger(): { logger: Logger; lines: () => Record<string, unknown>[] } {
+  const lines: Record<string, unknown>[] = [];
+  const logger = createLogger({
+    service: 'test',
+    level: 'debug',
+    destination: {
+      write: (line: string) => {
+        lines.push(JSON.parse(line) as Record<string, unknown>);
+      },
+    },
+  });
+  return { logger, lines: () => [...lines] };
+}
+
+function text(seq: number): string {
   const message: TelemetryMessage = {
     v: 1,
     deviceId: 'dev-0001',
@@ -23,7 +40,7 @@ function frame(seq: number): Buffer {
     type: 'metrics',
     payload: { temperatureC: 40, cpuPercent: 10, ramPercent: 50 },
   };
-  return encodeFrame(message);
+  return encodeMessage(message);
 }
 
 /** A Random whose every draw is `value`, so a retry delay is a pure function of the attempt. */
@@ -42,7 +59,11 @@ function isWritable(connection: DeviceConnection): boolean {
   return state.name === 'connected' && state.writable;
 }
 
-const open: { sinks: TestSink[]; connections: DeviceConnection[] } = { sinks: [], connections: [] };
+const open: { sinks: TestSink[]; connections: DeviceConnection[]; servers: http.Server[] } = {
+  sinks: [],
+  connections: [],
+  servers: [],
+};
 
 async function sink(): Promise<TestSink> {
   const created = await startTestSink();
@@ -62,23 +83,48 @@ function connect(port: number, onWritable: () => void = () => undefined): Device
   return connection;
 }
 
+/** A server that answers every upgrade with 404: ingest with another path, or not ingest at all. */
+async function rejectingServer(): Promise<number> {
+  const server = http.createServer();
+  server.on('upgrade', (_request, socket) => {
+    socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
+    socket.destroy();
+  });
+  open.servers.push(server);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  return typeof address === 'object' && address !== null ? address.port : 0;
+}
+
 afterEach(async () => {
   await Promise.all(open.connections.map((connection) => connection.stop()));
   await Promise.all(open.sinks.map((created) => created.close()));
+  await Promise.all(
+    open.servers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))),
+  );
   open.connections.length = 0;
   open.sinks.length = 0;
+  open.servers.length = 0;
+});
+
+describe('socketUrl', () => {
+  it('builds the endpoint URL and brackets an IPv6 literal', () => {
+    expect(socketUrl({ host: '10.0.0.5', port: 4000 })).toBe('ws://10.0.0.5:4000/telemetry');
+    expect(socketUrl({ host: 'ingest', port: 4000 })).toBe('ws://ingest:4000/telemetry');
+    expect(socketUrl({ host: '::1', port: 4000 })).toBe('ws://[::1]:4000/telemetry');
+  });
 });
 
 describe('DeviceConnection', () => {
-  it('connects and writes complete frames in the order written', async () => {
+  it('connects and sends complete messages in the order written', async () => {
     const target = await sink();
     const connection = connect(target.port, () => {
-      for (let seq = 1; seq <= 3; seq += 1) connection.write(frame(seq));
+      for (let seq = 1; seq <= 3; seq += 1) connection.write(text(seq));
     });
     connection.start();
 
-    const lines = await target.waitForLines(3);
-    expect(lines.map((line) => (JSON.parse(line) as TelemetryMessage).seq)).toEqual([1, 2, 3]);
+    const messages = await target.waitForMessages(3);
+    expect(messages.map((line) => (JSON.parse(line) as TelemetryMessage).seq)).toEqual([1, 2, 3]);
   });
 
   it('reconnects after the peer drops the connection and keeps sending', async () => {
@@ -86,14 +132,14 @@ describe('DeviceConnection', () => {
     let seq = 0;
     const connection = connect(target.port, () => {
       seq += 1;
-      connection.write(frame(seq));
+      connection.write(text(seq));
     });
     connection.start();
-    await target.waitForLines(1);
+    await target.waitForMessages(1);
 
     target.dropConnections();
     // The connection re-resolves and reconnects on its own; onWritable fires again on connect.
-    await target.waitForLines(2);
+    await target.waitForMessages(2);
     expect(target.connectionCount()).toBeGreaterThanOrEqual(2);
   });
 
@@ -101,20 +147,20 @@ describe('DeviceConnection', () => {
     const target = await sink();
     const connection = connect(target.port);
     // Nothing started yet, so there is no socket at all.
-    expect(connection.write(frame(1))).toBe(false);
-    expect(target.lines()).toEqual([]);
+    expect(connection.write(text(1))).toBe(false);
+    expect(target.messages()).toEqual([]);
   });
 
   it('reports a stopped state and writes nothing after stop()', async () => {
     const target = await sink();
-    const connection = connect(target.port, () => connection.write(frame(1)));
+    const connection = connect(target.port, () => connection.write(text(1)));
     connection.start();
-    await target.waitForLines(1);
+    await target.waitForMessages(1);
 
     await connection.stop();
     expect(connection.state.name).toBe('stopped');
     expect(connection.isConnected).toBe(false);
-    expect(connection.write(frame(2))).toBe(false);
+    expect(connection.write(text(2))).toBe(false);
   });
 
   it('skips a host that does not resolve and connects through the one that does', async () => {
@@ -127,13 +173,13 @@ describe('DeviceConnection', () => {
       ],
       random: createRandom(3),
       logger: silentLogger(),
-      onWritable: () => connection.write(frame(1)),
+      onWritable: () => connection.write(text(1)),
     });
     open.connections.push(connection);
     connection.start();
 
-    const lines = await target.waitForLines(1);
-    expect((JSON.parse(lines[0] ?? '{}') as TelemetryMessage).seq).toBe(1);
+    const messages = await target.waitForMessages(1);
+    expect((JSON.parse(messages[0] ?? '{}') as TelemetryMessage).seq).toBe(1);
   });
 
   it('connects through the address that resolved while another lookup never answers', async () => {
@@ -146,7 +192,7 @@ describe('DeviceConnection', () => {
       ],
       random: createRandom(3),
       logger: silentLogger(),
-      onWritable: () => connection.write(frame(1)),
+      onWritable: () => connection.write(text(1)),
       resolveTimeoutMs: 100,
       // `dns.lookup` has no timeout: a resolver that never answers looks exactly like this.
       lookup: (host) =>
@@ -157,21 +203,12 @@ describe('DeviceConnection', () => {
     open.connections.push(connection);
     connection.start();
 
-    const lines = await target.waitForLines(1);
-    expect((JSON.parse(lines[0] ?? '{}') as TelemetryMessage).seq).toBe(1);
+    const messages = await target.waitForMessages(1);
+    expect((JSON.parse(messages[0] ?? '{}') as TelemetryMessage).seq).toBe(1);
   });
 
   it('stops waiting at the deadline and backs off when no lookup answered', async () => {
-    const lines: Array<Record<string, unknown>> = [];
-    const logger = createLogger({
-      service: 'test',
-      level: 'debug',
-      destination: {
-        write: (line: string) => {
-          lines.push(JSON.parse(line) as Record<string, unknown>);
-        },
-      },
-    });
+    const { logger, lines } = collectingLogger();
     const connection = new DeviceConnection({
       deviceId: 'dev-0001',
       hosts: [{ host: 'slow.test', port: 1 }],
@@ -187,21 +224,12 @@ describe('DeviceConnection', () => {
     await vi.waitFor(() => {
       expect(connection.state.name).toBe('backoff');
     });
-    const deadline = lines.filter((line) => line.msg === 'dns lookup deadline reached');
+    const deadline = lines().filter((line) => line.msg === 'dns lookup deadline reached');
     expect(deadline.map((line) => [line.resolved, line.hosts])).toEqual([[0, 1]]);
   });
 
   it('drops a lookup that answers after the deadline, and only logs it at debug', async () => {
-    const lines: Array<Record<string, unknown>> = [];
-    const logger = createLogger({
-      service: 'test',
-      level: 'debug',
-      destination: {
-        write: (line: string) => {
-          lines.push(JSON.parse(line) as Record<string, unknown>);
-        },
-      },
-    });
+    const { logger, lines } = collectingLogger();
     const late = new Map<
       string,
       { resolve: (value: { address: string }[]) => void; reject: (error: Error) => void }
@@ -231,18 +259,18 @@ describe('DeviceConnection', () => {
     late.get('late-answer.test')?.resolve([{ address: '127.0.0.1' }]);
     late.get('late-failure.test')?.reject(new Error('ENOTFOUND'));
     await vi.waitFor(() => {
-      const after = lines.filter((line) => String(line.msg).endsWith('after the deadline'));
+      const after = lines().filter((line) => String(line.msg).endsWith('after the deadline'));
       expect(after.map((line) => [line.level, line.msg, line.host])).toEqual([
         [20, 'dns lookup answered after the deadline', 'late-answer.test'],
         [20, 'dns lookup failed after the deadline', 'late-failure.test'],
       ]);
     });
-    expect(lines.filter((line) => line.msg === 'dns lookup failed')).toEqual([]);
+    expect(lines().filter((line) => line.msg === 'dns lookup failed')).toEqual([]);
   });
 
-  it('takes the frame that fills the buffer, then refuses frames until the peer reads again', async () => {
+  it('takes the message that reaches the high-water mark, refuses the next, and becomes writable again through the send callback after the peer reads again', async () => {
     // The one thing worth testing here, and the reason these tests use a real socket at all: a
-    // mocked socket would only test the mock's idea of when `write()` returns false.
+    // mocked socket would only test the mock's idea of when the send buffer is full.
     const target = await sink();
     let writable = false;
     const connection = connect(target.port, () => {
@@ -255,24 +283,24 @@ describe('DeviceConnection', () => {
 
     target.pauseConnections();
 
-    // Write until the kernel and the socket's own buffer are full. 64 KiB at a time so this ends
-    // quickly; the cap stops a runaway if backpressure never appears. Every frame up to and
-    // including the one that fills the buffer is taken: that frame is queued, and reporting it
-    // as refused would make the pump write it again after 'drain'.
-    const chunk = Buffer.alloc(64 * 1024, 0x61);
+    // Send until the kernel and the socket's own buffer are full. 16 KiB at a time so this ends
+    // quickly; the cap stops a runaway if backpressure never appears. Every message up to and
+    // including the one that reaches the mark is taken: that message is queued, and reporting
+    // it as refused would make the pump send it again after the buffer drained.
+    const chunk = 'a'.repeat(16 * 1024);
     let taken = 0;
-    while (isWritable(connection) && taken < 500) {
+    while (isWritable(connection) && taken < 4_000) {
       expect(connection.write(chunk)).toBe(true);
       taken += 1;
     }
     expect(isWritable(connection)).toBe(false);
-    // The next frame is refused rather than queued behind the backlog.
+    // The next message is refused rather than queued behind the backlog.
     expect(connection.write(chunk)).toBe(false);
 
     writable = false;
     target.resumeConnections();
 
-    // `'drain'` must fire and re-open the pump; without it the device would stay stuck forever.
+    // The send callback must fire and re-open the pump; without it the device would stay stuck.
     await vi.waitFor(
       () => {
         expect(writable).toBe(true);
@@ -280,12 +308,15 @@ describe('DeviceConnection', () => {
       { timeout: 5_000 },
     );
     expect(isWritable(connection)).toBe(true);
-  });
+    // Nothing was lost or sent twice: the sink holds exactly what was taken, in order.
+    await target.waitForMessages(taken);
+    expect(target.messages()).toHaveLength(taken);
+  }, 20_000);
 
-  it('refuses a frame once its socket is destroyed, before the close event arrives', async () => {
+  it('refuses a message once its socket is terminated, before the close event arrives', async () => {
     // `dropConnection()` destroys the socket at once, but the move to backoff waits for 'close',
-    // which Node emits later. A frame written in that gap is discarded with ERR_STREAM_DESTROYED,
-    // so it must be reported as not taken and stay in the outbox for the next connection.
+    // which ws emits later. A send in that gap fails only through its callback, so the message
+    // must be reported as not taken and stay in the outbox for the next connection.
     const target = await sink();
     const connection = connect(target.port);
     connection.start();
@@ -297,19 +328,20 @@ describe('DeviceConnection', () => {
 
     // Still inside the gap; otherwise the refusal below would come from the state check.
     expect(connection.state.name).toBe('connected');
-    expect(connection.write(frame(1))).toBe(false);
+    expect(connection.write(text(1))).toBe(false);
   });
 
-  it('abandons a connect attempt that never completes, instead of stalling forever', async () => {
+  it('abandons a handshake that never completes, instead of stalling forever', async () => {
     // 198.51.100.0/24 is TEST-NET-2 (RFC 5737): reserved for documentation and not routed, so the
     // SYN is dropped rather than refused. That is the black-hole case — no 'error', no 'close' —
-    // which without a connect timeout leaves the device in `connecting` for the OS SYN budget.
+    // which without a handshake timeout leaves the device in `connecting` for the OS SYN budget.
     // The timeout is overridden low so the test does not wait ten seconds for it.
+    const { logger, lines } = collectingLogger();
     const connection = new DeviceConnection({
       deviceId: 'dev-0001',
       hosts: [{ host: '198.51.100.1', port: 9 }],
       random: createRandom(3),
-      logger: silentLogger(),
+      logger,
       onWritable: () => undefined,
       connectTimeoutMs: 150,
     });
@@ -318,13 +350,17 @@ describe('DeviceConnection', () => {
 
     // `backoff` specifically. Accepting `resolving` too would make this pass instantly and for
     // the wrong reason: `start()` sets `resolving` synchronously, so `vi.waitFor` would return on
-    // its first call, before the connect has had any chance to time out.
+    // its first call, before the handshake has had any chance to time out.
     await vi.waitFor(
       () => {
         expect(connection.state.name).toBe('backoff');
       },
       { timeout: 4_000 },
     );
+    const errors = lines().filter((line) => line.msg === 'device socket error');
+    expect(errors.map((line) => (line.err as { message: string }).message)).toEqual([
+      'Opening handshake has timed out',
+    ]);
   });
 
   it('closes within its own deadline even when the peer never responds', async () => {
@@ -345,7 +381,7 @@ describe('DeviceConnection', () => {
 
     const startedAt = Date.now();
     await connection.stop();
-    // Bounded by CLOSE_TIMEOUT_MS, not by the 30 s connect timeout above.
+    // The handshake is aborted at once, not after the 30 s handshake timeout above.
     expect(Date.now() - startedAt).toBeLessThan(3_000);
     expect(connection.state.name).toBe('stopped');
   });
@@ -366,6 +402,30 @@ describe('DeviceConnection', () => {
     });
   });
 
+  it('goes to backoff when the server rejects the upgrade, and logs the response', async () => {
+    const port = await rejectingServer();
+    const { logger, lines } = collectingLogger();
+    const connection = new DeviceConnection({
+      deviceId: 'dev-0001',
+      hosts: [{ host: '127.0.0.1', port }],
+      random: createRandom(3),
+      logger,
+      onWritable: () => undefined,
+    });
+    open.connections.push(connection);
+    connection.start();
+
+    await vi.waitFor(() => {
+      expect(connection.state.name).toBe('backoff');
+    });
+    // The first attempt only: the seeded backoff can schedule a retry within the wait above, and
+    // that retry is refused the same way.
+    const [error] = lines().filter((line) => line.msg === 'device socket error');
+    expect(error).toMatchObject({ level: 40, err: { message: 'Unexpected server response: 404' } });
+    const [closed] = lines().filter((line) => line.msg === 'device socket closed, reconnecting');
+    expect(closed).toMatchObject({ attempt: 0, closeCode: 1006 });
+  });
+
   it('retries on the emulator schedule, one seeded draw per retry', async () => {
     // A refused port fails every attempt at once, so each delay comes from the schedule alone:
     // 500 ms doubling to a 10 s cap (emulator spec, decision 17). A draw of 0.01 keeps six retries
@@ -383,7 +443,8 @@ describe('DeviceConnection', () => {
     const timeouts = vi.spyOn(globalThis, 'setTimeout');
     try {
       // Every attempt also arms the DNS deadline timer; a value no retry can produce makes it
-      // recognisable, so it is filtered out of the recorded calls below.
+      // recognisable, so it is filtered out of the recorded calls below. ws's handshake timeout is
+      // the request socket's own timer, not a global `setTimeout`, so it never shows up here.
       const resolveTimeoutMs = 1_234;
       const connection = new DeviceConnection({
         deviceId: 'dev-0001',

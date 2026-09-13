@@ -61,12 +61,12 @@ function byDevice(messages: readonly TelemetryMessage[]): Map<string, TelemetryM
  */
 async function waitForFarewells(target: TestSink, devices: number): Promise<TelemetryMessage[]> {
   await vi.waitFor(() => {
-    const offline = parse(target.lines()).filter(
+    const offline = parse(target.messages()).filter(
       (m) => m.type === 'status' && m.payload.state === 'offline',
     );
     expect(offline).toHaveLength(devices);
   });
-  return parse(target.lines());
+  return parse(target.messages());
 }
 
 const open: { sinks: TestSink[]; fleets: Fleet[] } = { sinks: [], fleets: [] };
@@ -96,7 +96,7 @@ describe('Fleet', () => {
     const { logger } = collectingLogger();
     fleet({ config: configFor(target.port), logger }).start();
 
-    const messages = parse(await target.waitForLines(30));
+    const messages = parse(await target.waitForMessages(30));
     const grouped = byDevice(messages);
     expect([...grouped.keys()].sort()).toEqual(['dev-0001', 'dev-0002', 'dev-0003']);
     expect(target.connectionCount()).toBeGreaterThanOrEqual(3);
@@ -110,7 +110,7 @@ describe('Fleet', () => {
     const { logger } = collectingLogger();
     const running = fleet({ config: configFor(target.port), logger });
     running.start();
-    await target.waitForLines(15);
+    await target.waitForMessages(15);
 
     await running.shutdown();
 
@@ -136,7 +136,7 @@ describe('Fleet', () => {
       logger,
     });
     running.start();
-    await target.waitForLines(15);
+    await target.waitForMessages(15);
 
     await running.shutdown();
 
@@ -180,7 +180,7 @@ describe('Fleet', () => {
       summaryIntervalMs: 10,
     });
     running.start();
-    await target.waitForLines(5);
+    await target.waitForMessages(5);
 
     await running.shutdown();
     const after = lines().filter((line) => line.includes('emulator fleet summary')).length;
@@ -203,14 +203,14 @@ describe('Fleet', () => {
       logger,
     });
     running.start();
-    await target.waitForLines(10);
+    await target.waitForMessages(10);
 
     await running.shutdown();
     await waitForFarewells(target, 3);
     // Then give any wrongly re-armed heartbeat several periods to show itself.
     await new Promise((resolve) => setTimeout(resolve, 150));
 
-    for (const [deviceId, forDevice] of byDevice(parse(target.lines()))) {
+    for (const [deviceId, forDevice] of byDevice(parse(target.messages()))) {
       const offlineIndex = forDevice.findIndex(
         (m) => m.type === 'status' && m.payload.state === 'offline',
       );

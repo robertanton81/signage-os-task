@@ -27,19 +27,19 @@ export type DeviceStats = {
 };
 
 /**
- * Writes the outbox into the connection, oldest entry first, while the connection takes frames.
+ * Writes the outbox into the connection, oldest entry first, while the connection takes messages.
  * Returns the entries it wrote, in order.
  *
  * Peek, write, and remove only what the connection took. Shifting first and pushing back on a
  * refused write would put the entry behind anything enqueued in between — the emulator would become
  * the source of the reordering the tests attribute to the broker. Removing on `true` is exact
- * because `write()` counts the frame that filled the socket's buffer as taken; the first version
- * counted it as refused, kept it at the head and wrote it a second time after `'drain'`.
+ * because `write()` counts the message that filled the send buffer as taken; the first version
+ * counted it as refused, kept it at the head and wrote it a second time after the buffer drained.
  */
 export function pumpOutbox(outbox: Outbox, connection: DeviceConnection): OutboxEntry[] {
   const written: OutboxEntry[] = [];
   for (let entry = outbox.peek(); entry !== null; entry = outbox.peek()) {
-    if (!connection.write(entry.frame)) break;
+    if (!connection.write(entry.text)) break;
     outbox.shift();
     written.push(entry);
   }

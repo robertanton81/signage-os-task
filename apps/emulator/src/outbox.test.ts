@@ -47,15 +47,15 @@ describe('Outbox', () => {
     expect(outbox.shift()).toBeNull();
   });
 
-  it('encodes the frame at push time, ending in a newline', () => {
+  it('encodes the message text at push time, compact and on one line', () => {
     const outbox = new Outbox(10);
     const message = metrics();
     outbox.push(message);
     const entry = outbox.shift();
     expect(entry).not.toBeNull();
-    const frame = entry?.frame.toString('utf8') ?? '';
-    expect(frame.endsWith('\n')).toBe(true);
-    expect(JSON.parse(frame)).toEqual(message);
+    const text = entry?.text ?? '';
+    expect(text).toBe(JSON.stringify(message));
+    expect(text.includes('\n')).toBe(false);
   });
 
   it('evicts the oldest non-diagnostic first and keeps the diagnostics', () => {

@@ -1,10 +1,10 @@
-import { encodeFrame, type TelemetryMessage } from '@telemetry/shared';
+import { encodeMessage, type TelemetryMessage } from '@telemetry/shared';
 
-/** The message is kept alongside its bytes for the drop log and for the eviction rule's type check. */
-export type OutboxEntry = { message: TelemetryMessage; frame: Buffer };
+/** The message is kept alongside its text for the drop log and for the eviction rule's type check. */
+export type OutboxEntry = { message: TelemetryMessage; text: string };
 
 /**
- * A bounded FIFO of frames waiting for a writable socket.
+ * A bounded FIFO of messages waiting for a writable connection.
  *
  * It is the only place in the emulator that drops a message, which is why `push` reports what it
  * evicted: the caller logs it at `warn` with the identity, so this named loss window is never
@@ -24,8 +24,8 @@ export class Outbox {
   }
 
   /**
-   * Appends, encoding the frame now so the queue holds exactly the bytes that will be written.
-   * Returns the entry evicted to make room, or null.
+   * Appends, encoding the text now so the queue holds exactly what will be sent. Returns the entry
+   * evicted to make room, or null.
    *
    * Eviction spares diagnostics until nothing else is left: under absolute values the newest
    * reading is worth more than the oldest, but a dropped `error` diagnostic is an alert that is
@@ -35,7 +35,7 @@ export class Outbox {
    */
   push(message: TelemetryMessage): OutboxEntry | null {
     const evicted = this.#entries.length >= this.#maxEntries ? this.#evict() : null;
-    this.#entries.push({ message, frame: encodeFrame(message) });
+    this.#entries.push({ message, text: encodeMessage(message) });
     return evicted;
   }
 

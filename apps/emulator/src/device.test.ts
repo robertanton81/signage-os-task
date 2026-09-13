@@ -92,7 +92,7 @@ describe('DeviceClient', () => {
     const device = client(configFor(target.port));
     device.start();
 
-    const messages = parse(await target.waitForLines(15));
+    const messages = parse(await target.waitForMessages(15));
     expect(messages.map((m) => m.seq)).toEqual(messages.map((_unused, i) => i + 1));
     expect(new Set(messages.map((m) => m.sessionId)).size).toBe(1);
     expect(messages.every((m) => m.deviceId === 'dev-0001')).toBe(true);
@@ -103,7 +103,7 @@ describe('DeviceClient', () => {
     const device = client(configFor(target.port));
     device.start();
 
-    const [first] = parse(await target.waitForLines(1));
+    const [first] = parse(await target.waitForMessages(1));
     expect(first).toMatchObject({ seq: 1, type: 'status', payload: { state: 'online' } });
   });
 
@@ -115,7 +115,7 @@ describe('DeviceClient', () => {
     );
     device.start();
 
-    const messages = parse(await target.waitForLines(8));
+    const messages = parse(await target.waitForMessages(8));
     // The heartbeat period is roughly thirteen times shorter than the tick, so nearly every line
     // must be a heartbeat status. Without the timer there would be exactly one status — the
     // session-start `online` — and the rest would be metrics, so this cannot pass by accident.
@@ -140,7 +140,7 @@ describe('DeviceClient', () => {
 
     const { lost, replacement, between } = await vi.waitFor(
       () => {
-        const messages = parse(target.lines());
+        const messages = parse(target.messages());
         const [first, second] = messages.filter((m) => m.type === 'status');
         if (first === undefined || second === undefined) throw new Error('no replacement yet');
         return {
@@ -177,7 +177,7 @@ describe('DeviceClient', () => {
 
     const statuses = await vi.waitFor(
       () => {
-        const found = parse(target.lines()).filter((m) => m.type === 'status');
+        const found = parse(target.messages()).filter((m) => m.type === 'status');
         if (found.length < 5) throw new Error(`only ${String(found.length)} statuses so far`);
         return found;
       },
@@ -198,10 +198,10 @@ describe('DeviceClient', () => {
     const target = await sink();
     const device = client(configFor(target.port));
     device.start();
-    const before = parse(await target.waitForLines(5));
+    const before = parse(await target.waitForMessages(5));
 
     target.dropConnections();
-    const after = parse(await target.waitForLines(before.length + 10));
+    const after = parse(await target.waitForMessages(before.length + 10));
 
     expect(target.connectionCount()).toBeGreaterThanOrEqual(2);
     // No gap and no repeat across the break: the outbox held them and the session kept counting.
@@ -212,7 +212,7 @@ describe('DeviceClient', () => {
     const target = await sink();
     const device = client(configFor(target.port));
     device.start();
-    await target.waitForLines(3);
+    await target.waitForMessages(3);
 
     await device.stop();
     expect(device.isConnected).toBe(false);
@@ -229,7 +229,7 @@ describe('DeviceClient', () => {
     const target = await sink();
     const device = client(configFor(target.port, { EMULATOR_HEARTBEAT_MS: '20' }));
     device.start();
-    await target.waitForLines(5);
+    await target.waitForMessages(5);
 
     device.stopGenerating();
     device.prepareShutdown();
@@ -243,15 +243,15 @@ describe('DeviceClient', () => {
     expect(device.outboxLength).toBe(queuedAtShutdown);
     device.pump();
 
-    // Wait for the farewell to actually reach the sink — `waitForLines(n)` would be satisfied by
+    // Wait for the farewell to actually reach the sink — `waitForMessages(n)` would be satisfied by
     // the lines that arrived before shutdown and would read the wrong "last" message.
     await vi.waitFor(() => {
-      const offline = parse(target.lines()).filter(
+      const offline = parse(target.messages()).filter(
         (m) => m.type === 'status' && m.payload.state === 'offline',
       );
       expect(offline).toHaveLength(1);
     });
-    expect(parse(target.lines()).at(-1)).toMatchObject({
+    expect(parse(target.messages()).at(-1)).toMatchObject({
       type: 'status',
       payload: { state: 'offline' },
     });
@@ -266,20 +266,20 @@ describe('DeviceClient', () => {
       }),
     );
     device.start();
-    const before = parse(await target.waitForLines(5));
+    const before = parse(await target.waitForMessages(5));
     const firstSession = before[0]?.sessionId ?? 0;
     expect(firstSession).toBeGreaterThan(0);
 
     // The interval is drawn in [0.5x, 1.5x], so 1000 ms means a restart within 1.5 s.
     await vi.waitFor(
       () => {
-        const sessions = new Set(parse(target.lines()).map((m) => m.sessionId));
+        const sessions = new Set(parse(target.messages()).map((m) => m.sessionId));
         expect(sessions.size).toBeGreaterThan(1);
       },
       { timeout: 4_000 },
     );
 
-    const all = parse(target.lines());
+    const all = parse(target.messages());
     const sessions = [...new Set(all.map((m) => m.sessionId))].sort((a, b) => a - b);
     const [, second] = sessions;
     expect(second).toBeGreaterThan(firstSession);
@@ -304,7 +304,7 @@ describe('DeviceClient', () => {
       }),
     );
     device.start();
-    await target.waitForLines(5);
+    await target.waitForMessages(5);
 
     await vi.waitFor(
       () => {
@@ -312,7 +312,7 @@ describe('DeviceClient', () => {
       },
       { timeout: 4_000 },
     );
-    const after = parse(await target.waitForLines(15));
+    const after = parse(await target.waitForMessages(15));
 
     // Transport loss, not device loss: one session throughout, and seq never restarts. Resetting
     // seq here would reuse the identity, which is the bug the whole design exists to prevent.
@@ -361,7 +361,7 @@ describe('DeviceClient', () => {
     const target = await sink();
     const device = client(configFor(target.port));
     device.start();
-    await target.waitForLines(10);
+    await target.waitForMessages(10);
 
     // Anchored to what was actually written: `toBeGreaterThan(0)` would pass with the counter
     // stuck at 1 while ten lines went out.
@@ -443,14 +443,14 @@ describe('pumpOutbox', () => {
       },
       { timeout: 10_000 },
     );
-    // Wait for the observable outcome — the sink holds at least every queued line — rather than
+    // Wait for the observable outcome — the sink holds at least every queued message — rather than
     // trust `stop()`: its graceful close races a one-second destroy that a slow machine could lose
     // while the sink still reads. `stop()` then waits for the sink's FIN, which the sink sends only
-    // after reading everything, so a frame written twice would be in `lines()` as well.
-    await target.waitForLines(queued);
+    // after reading everything, so a message sent twice would be in `messages()` as well.
+    await target.waitForMessages(queued);
     await connection.stop();
 
-    const seqs = target.lines().map((line) => (JSON.parse(line) as TelemetryMessage).seq);
+    const seqs = target.messages().map((line) => (JSON.parse(line) as TelemetryMessage).seq);
     expect(seqs).toEqual(Array.from({ length: queued }, (_unused, index) => index + 1));
     // The count the pump reports — what `DeviceClient` adds to `stats.written` — matches the
     // frames on the wire. Before the fix the two differed: each stop added a frame, not a count.
