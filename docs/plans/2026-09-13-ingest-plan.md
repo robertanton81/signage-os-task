@@ -1,3 +1,51 @@
+> **STATUS: SHIPPED 2026-09-13.** Landed as 30 commits, `56c8dc7..0930b40`: the spec and plan commit, one or more commits per task, and the fixes the reviews asked for. The other session's commits in that range (`e61dfd4`, `8931fc4`, `7c1c57f`, `2d49902`, `02d3c17`, `214c785`) are not counted. The full pre-flight passed right before the last commit: `pnpm format:check && pnpm lint && pnpm typecheck && pnpm test`, 538 tests in 28 files, 209 of them in `apps/ingest`. The unchecked `- [ ]` boxes below are historical; the work is done. **Do not re-execute this plan.** If you are changing ingest, work directly in `apps/ingest/src/`.
+>
+> **Library and version drift:** none. amqplib 2.0.1, zod 4.6.2, vitest 4.1.11, TypeScript 6.0.3 and Node 24.21.0 are as pinned, and amqplib ships its own types. Four facts from the library, runtime and broker sources shaped the code, and the plan did not describe them:
+>
+> - amqplib 2.0.1, `lib/channel.js`: a channel registers its own `close` listener in its constructor, and that listener fails every unconfirmed publish callback with "channel closed". `publisher.ts` therefore prepends its channel `close` listener, so a closed channel recycles as `channel_closed`, not as `nacked`.
+> - amqplib 2.0.1, `lib/channel_model.js` forwards only `error`, `close`, `blocked`, `unblocked` and `update-secret-ok` from the connection, so only the channel has a `handler-error` listener. `lib/connection.js` emits no `error` for a CONNECTION_FORCED close, so the error the connection closed with goes into the backoff `warn` line.
+> - Node 24.21.0: a socket accepted with `pauseOnConnect` already has `readableFlowing` false (`lib/net.js`, `pauseOnCreate`), so `DeviceConnection` does not pause it again, and its `timeout` starts undefined, so the constructor sets `setTimeout(0)`. A server socket's `data` chunk is at most 65 536 bytes. `http.Server#timeout` defaults to 0.
+> - RabbitMQ 4.3: the `guest` user may log in only from inside the container, so the scripted run creates its own user through `RABBITMQ_DEFAULT_USER` and `RABBITMQ_DEFAULT_PASS`.
+>
+> **Plan prescriptions that needed adjustment:**
+>
+> - Task 1: the spec, the plan and the amendments landed as the user's own commit `56c8dc7`; `/implement` added no commit for it.
+> - Task 2: the moved backoff test's fifth case compared a call with itself; it became an exact scaling check. The emulator's `BACKOFF_*` constants stay private to `apps/emulator/src/connection.ts`. The new emulator retry-delay test calls `vi.isFakeTimers()` before it spies on `setTimeout`, because the first `vi.waitFor` builds vitest's fake timers, which call the global `setTimeout(NOOP, 0)` once.
+> - Task 3: the `RABBITMQ_URL` rejections include the look-alikes `amqpx://` and `amqp//`, and every rejection asserts the full fixed message.
+> - Task 4: `INGEST_PORT` uses `.min(1, { abort: true })` and `.max(65_535, { abort: true })`. Without `abort`, zod runs the `superRefine` after a range error and adds a misleading "must differ from HEALTH_PORT" line.
+> - Task 5: the publish-arguments table compares `content` separately, because `expect.any(Buffer)` is typed `any` and fails lint. A multi-byte UTF-8 case guards against a latin1 encoding.
+> - Spec correction `3b0f592`: `socket.pause()` does not stop a socket's handle. Only a socket that was never resumed, or one whose buffer is full, misses the peer's FIN or reset (probes in `.local/research/2026-09-13-paused-*.mjs`).
+> - Task 6: only an odd cap (3) tells `Math.floor` from `Math.ceil`, so the window tests use one.
+> - Task 7: `StallClock` takes named objects, `onSent({ now, sentCount })`, `onAck({ now, sentCount })` and `isStalled({ now, timeoutMs })`; the plan's positional signatures broke the rule for two arguments of the same type. `onSent` starts the wait only when the sent count rises to 1.
+> - Task 8: `connecting` is two variants, and the failed one carries the first trigger's reason, which the spec's type could not hold. The row tests are one 36-case table.
+> - Task 9: the plan's close test with a silent socket proved nothing, because `server.close()` ends idle connections; the test pipelines a complete and an unfinished request instead. `server.timeout` defaults to 0, so `HEALTH_IDLE_TIMEOUT_MS` (10 s) bounds a connection that never sends a request. HEAD and PUT answer 404.
+> - Task 10: events dispatched while effects run are queued, so a publish that throws inside `send_pending` cannot start a transition in the middle of another. A model is closed once per handle, and `stop()` waits for every close in flight. `AMQP_RECONNECT_MAX_MS` is taken from `BACKOFF_RESET_AFTER_MS`. The plan gave the shell no test file; after review, `publisher.test.ts` tests `stop()` without a broker, `parseMessageId` moved to `amqp-message.ts` with tests, and the stall guard became the tested pure function `isConfirmStall`.
+> - Task 11: `DeviceConnection` has a `pendingBytes` getter, which the close line and two tests read. Test 10 became three tests, 10a to 10c. A device with `allowHalfOpen: true` never sees a close when the server destroys its half-closed socket with nothing unread, because no RST is sent (`.local/research/2026-09-13-half-open-destroy-probe.mjs`), so test 10b waits for the server's close line.
+> - Task 12: `main()` is async, and the publisher and the server are constructed before the lifecycle handlers. The unref'd summary interval is not cleared at shutdown. The manual check ran as `.local/research/2026-09-13-ingest-no-broker-run.mjs`, and `main.test.ts` covers the same ground in a child process, like the emulator's process test.
+> - Task 13: see the run's evidence below. Scenario 2 recycles as `channel_closed`, and scenario 5's early drain shows as a missing budget warning.
+> - Task 14: rows T26 to T37 sit between the T19–T25 block and the T38–T39 block of the consistency spec, and T36 has the narrowed wording.
+>
+> **Corrections applied during review:**
+>
+> - Tasks 2 to 9, before the pause: the second commit of each task (`c52412b`, `981e781`, `2d3a3f3`, `d82635e`, `4f05c2e`, `51e51a8`, `251a47d`, `8a55da0`) holds the fixes from that task's review, as its message describes.
+> - Task 10, test quality (3 blocking): the failure branches of `parseMessageId`, `stop()` from backoff and during a connect attempt, and the confirm-stall guard had no evidence; fixed in `c245e37`, with T36 narrowed in `fca48ee`. Code review (1 blocking): the `publish threw` and `publish nacked` debug lines lacked the message identity; fixed in `efb416c`.
+> - Task 11, test quality (3 blocking): the soft cap, `stats()` for an open connection and the `error` close reason were untested; fixed in `21547ea`, which also took two code-review suggestions, a readiness change during the drain and `lastDeviceId` on the error line.
+> - Task 12, test quality (1 blocking): the process test checked six outcomes with plain `expect`, so one failure hid the rest; fixed in `0c78e16` with `expect.soft`, plus a check that `/readyz` answers `shutting_down` during the drain.
+> - Spec `8124e8e`: decision 12 now matches the shipped publisher, and the Tests section lists the tests that shipped.
+>
+> **Mutation testing**, always in a separate worktree: every mutant of the new Task 10–12 tests made them fail, 39 distinct mutants in all (17 and 8 for the server, 7 for the entry point, 7 for the publisher). Two changes cannot be observed and have no test: dropping a `pause()` before the `data` listener (see above), and dropping the frames decoded before an oversized line, because one data chunk never exceeds the 64 KiB frame limit. The scripts and outputs are in `.local/research/`.
+>
+> **Deferrals worth tracking:**
+>
+> - Step 6: give ingest a Compose `stop_grace_period` above `SHUTDOWN_TIMEOUT_MS + AMQP_CLOSE_TIMEOUT_MS` (12 s; the spec suggests 15 s) and an exec-form `CMD`. Decide whether the test-support files (`fixtures.ts`, `test-publisher.ts`, `test-device.ts`, `test-source-hooks.ts`) belong in `dist/`.
+> - Step 7: automated broker tests of the publisher. T36 names the two paths no run reaches: the confirm-stall recycle, and a stop during a connect attempt that the broker completes.
+> - Entry point: no guard against a SIGTERM between the startup steps, no structured line for a configuration error before the handlers exist (the emulator behaves the same), and no test of the startup order or of the summary line.
+> - Publisher: no catch around the rest of a connect attempt (a throw there is a programmer error, and the lifecycle handler exits 1), and `#backoffTimer` is not unref'd.
+> - Tests: `main.test.ts` pre-allocates its ports, which another process can take first (the emulator's accepted pattern). The health tests have no seam test for the error logged after `listen`, and the explicit 10 s timeout of the in-flight close test is not explained. The long publisher-state walk is not split, and `Window` has no guard against a cap below 1 (the config schema enforces the minimum).
+> - Emulator, from before this plan: `apps/emulator/src/random.ts` passes pairs of numbers positionally (`int`, `range`, `deviceSeed`).
+>
+> **Process notes:** two sessions worked against `main` at the same time, and the user paused this one until the other had finished. Mutants run only in a separate worktree under a process-group timeout, because an endless mutant in the main tree once hung the other session's tests. Every commit was gated with `&&` on lint, typecheck, tests and format, and a mutant count went into a commit message only after the script had printed it.
+>
 > **Scripted run against RabbitMQ (Task 13), 2026-09-13.** `node .local/research/2026-09-13-ingest-scripted-run.mjs` ran the built entry point of `0c78e16` as a child process (`AMQP_HEARTBEAT_S=2`, `LOG_LEVEL=debug`) against a throwaway `rabbitmq:4.3-management` container that reported RabbitMQ 4.3.5 (Erlang 27.3.4.17). All six scenarios passed; the output is in `.local/research/2026-09-13-ingest-scripted-run-final-output.txt`.
 >
 > 1. **Normal publish.** Two devices sent 20 frames: 20 confirms, 20 messages in `telemetry.events`, 20 distinct ids. A peeked message had `message_id` `probe-a:1700000000000:1`, `content_type` `application/json`, `delivery_mode` 2, `timestamp` 1789316761 (seconds) and `x-received-at` 1789316761133 (milliseconds).
@@ -8,6 +56,8 @@
 > 6. **Invalid frames.** After a restart of the ingest process, `{"type":"bogus"}` and `not json` produced two `frame rejected` lines at `warn` (`invalid_schema`, then `invalid_json`). The queue held only the valid frame written after them, and the connection stayed open.
 >
 > Differences from the scenario text of Task 13 below: scenario 2 recycles as `channel_closed`, not `connection_closed`, because amqplib closes the channels before it emits the connection's `close`; scenario 5 has no log line with the drain numbers, so the early finish shows as the missing budget warning, exit code 0 and the 14 ms; the broker user comes from `RABBITMQ_DEFAULT_USER` and `RABBITMQ_DEFAULT_PASS`, because `guest` may log in only from inside the container; every scenario drains the queue and compares distinct message ids, because a requeued peek counts toward the quorum queue's delivery limit.
+>
+> **Plan text below is preserved as written. Treat the live code as authoritative.**
 
 # Socket Ingest Service Implementation Plan
 
