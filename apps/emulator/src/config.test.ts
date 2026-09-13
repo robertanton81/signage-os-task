@@ -105,6 +105,11 @@ describe('invalid configuration surfaces as ConfigError naming the variable', ()
     ['EMULATOR_CHAOS_PERCENT', { EMULATOR_CHAOS_PERCENT: '101' }],
     ['EMULATOR_DEVICE_COUNT', { EMULATOR_DEVICE_COUNT: '0' }],
     ['EMULATOR_SEED', { EMULATOR_SEED: 'abc' }],
+    // One millisecond above what a Node timer holds: the interval would fire after 1 ms instead.
+    ['EMULATOR_EVENT_INTERVAL_MS', { EMULATOR_EVENT_INTERVAL_MS: '2147483648' }],
+    ['EMULATOR_HEARTBEAT_MS', { EMULATOR_HEARTBEAT_MS: '2147483648' }],
+    // The chaos delay is drawn up to 1.5× the interval, so the bound is the limit divided by 1.5.
+    ['EMULATOR_CHAOS_INTERVAL_MS', { EMULATOR_CHAOS_INTERVAL_MS: '1431655765' }],
   ];
 
   for (const [variable, env] of cases) {
@@ -142,5 +147,19 @@ describe('invalid configuration surfaces as ConfigError naming the variable', ()
       'duplicate',
       'restart',
     ]);
+  });
+});
+
+describe('timer bounds', () => {
+  it('accepts the largest chaos interval whose 1.5× spread still fits a timer', () => {
+    expect(load({ EMULATOR_CHAOS_INTERVAL_MS: '1431655764' }).EMULATOR_CHAOS_INTERVAL_MS).toBe(
+      1_431_655_764,
+    );
+  });
+
+  it('accepts the largest event interval a timer can hold', () => {
+    expect(load({ EMULATOR_EVENT_INTERVAL_MS: '2147483647' }).EMULATOR_EVENT_INTERVAL_MS).toBe(
+      2_147_483_647,
+    );
   });
 });

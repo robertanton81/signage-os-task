@@ -158,6 +158,32 @@ describe('IngestServer', () => {
     expect([connection.received, connection.rejected]).toEqual([1, 2]);
   });
 
+  it('rejects a frame that is not valid UTF-8 instead of repairing it, and keeps the connection open', async () => {
+    const { server, publisher, logs, connect } = await startServer();
+    const device = await connect();
+    // An invalid byte inside the diagnostic message: repaired to U+FFFD it would pass validation.
+    device.write(
+      Buffer.concat([
+        Buffer.from(
+          '{"v":1,"deviceId":"dev-0001","sessionId":1700000000000,"seq":1,"occurredAt":1,"type":"diagnostic","payload":{"severity":"error","code":"E","message":"',
+        ),
+        Buffer.from([0xff]),
+        Buffer.from('"}}\n'),
+      ]),
+    );
+    device.writeMessage(exampleMessages.status);
+
+    const [request] = await publisher.waitForRequests(1);
+    expect(request?.message).toEqual(exampleMessages.status);
+    expect(publisher.requests).toHaveLength(1);
+    const rejected = linesWith(logs, 'frame rejected');
+    expect(rejected.map((line) => [line.level, line.reason, typeof line.bytes])).toEqual([
+      [WARN, 'invalid_utf8', 'number'],
+    ]);
+    const connection = await onlyConnection(server);
+    expect([connection.received, connection.rejected]).toEqual([1, 1]);
+  });
+
   it('closes a connection whose line exceeds the frame limit, after publishing the frame before it', async () => {
     const { server, publisher, logs, connect } = await startServer();
     const device = await connect();

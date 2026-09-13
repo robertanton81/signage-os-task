@@ -162,14 +162,48 @@ describe('loadConfig', () => {
 
 describe('envInt', () => {
   it('rejects a default below its own minimum when the schema is built', () => {
-    expect(() => envInt(100, 50)).toThrow(/default 50 is below the minimum 100/);
+    expect(() => envInt({ min: 100, defaultValue: 50 })).toThrow(
+      /default 50 is below the minimum 100/,
+    );
   });
 
-  it('accepts a default equal to its own minimum', () => {
-    expect(() => envInt(5, 5)).not.toThrow();
+  it('rejects a default above its own maximum when the schema is built', () => {
+    expect(() => envInt({ min: 1, max: 5, defaultValue: 6 })).toThrow(
+      /default 6 is above the maximum 5/,
+    );
   });
 
-  const fragment = z.object({ N: envInt(2, 7) });
+  it('rejects a maximum that is NaN when the schema is built', () => {
+    expect(() => envInt({ min: 1, max: Number.NaN, defaultValue: 1 })).toThrow(/NaN/);
+  });
+
+  it('rejects a maximum below the minimum when the schema is built', () => {
+    expect(() => envInt({ min: 5, max: 4, defaultValue: 5 })).toThrow(
+      /maximum 4 is below the minimum 5/,
+    );
+  });
+
+  it('accepts a default equal to its own minimum, and one equal to its maximum', () => {
+    expect(() => envInt({ min: 5, defaultValue: 5 })).not.toThrow();
+    expect(() => envInt({ min: 1, max: 5, defaultValue: 5 })).not.toThrow();
+  });
+
+  const fragment = z.object({ N: envInt({ min: 2, max: 9, defaultValue: 7 }) });
+
+  it('accepts a value at the maximum', () => {
+    expect(loadConfig(fragment, { N: '9' }).N).toBe(9);
+  });
+
+  it('rejects a value above the maximum, naming the variable', () => {
+    expect(problemsOf(() => loadConfig(fragment, { N: '10' }))).toEqual([
+      expect.stringMatching(/^N: /),
+    ]);
+  });
+
+  it('leaves a variable without a maximum unbounded', () => {
+    const unbounded = z.object({ N: envInt({ min: 0, defaultValue: 0 }) });
+    expect(loadConfig(unbounded, { N: '9007199254740991' }).N).toBe(9_007_199_254_740_991);
+  });
 
   it('applies the default when the variable is unset', () => {
     expect(loadConfig(fragment, {}).N).toBe(7);
@@ -246,5 +280,54 @@ describe('healthEnv', () => {
     { value: '65535', port: 65_535 },
   ])('accepts the boundary port $value', ({ value, port }) => {
     expect(loadConfig(health, { HEALTH_PORT: value }).HEALTH_PORT).toBe(port);
+  });
+});
+
+describe('timer-fed variables stop at the limit Node timers accept', () => {
+  // Above 2 147 483 647 ms Node sets a setTimeout delay to 1 ms and truncates a socket timeout
+  // (timers docs), so a huge SHUTDOWN_TIMEOUT_MS would end a drain at once instead of never.
+  const shutdown = z.object({ ...shutdownEnv });
+  const rabbitmq = z.object({ ...rabbitmqEnv });
+  const mongodb = z.object({ ...mongodbEnv });
+
+  it('SHUTDOWN_TIMEOUT_MS accepts the largest delay a timer can hold', () => {
+    expect(loadConfig(shutdown, { SHUTDOWN_TIMEOUT_MS: '2147483647' }).SHUTDOWN_TIMEOUT_MS).toBe(
+      2_147_483_647,
+    );
+  });
+
+  it('SHUTDOWN_TIMEOUT_MS rejects one millisecond more, naming the variable', () => {
+    expect(problemsOf(() => loadConfig(shutdown, { SHUTDOWN_TIMEOUT_MS: '2147483648' }))).toEqual([
+      expect.stringMatching(/^SHUTDOWN_TIMEOUT_MS: /),
+    ]);
+  });
+
+  it('MONGODB_TIMEOUT_MS accepts the largest delay a timer can hold', () => {
+    expect(
+      loadConfig(mongodb, { MONGODB_URL: 'mongodb://db', MONGODB_TIMEOUT_MS: '2147483647' })
+        .MONGODB_TIMEOUT_MS,
+    ).toBe(2_147_483_647);
+  });
+
+  it('MONGODB_TIMEOUT_MS rejects one millisecond more, naming the variable', () => {
+    expect(
+      problemsOf(() =>
+        loadConfig(mongodb, { MONGODB_URL: 'mongodb://db', MONGODB_TIMEOUT_MS: '2147483648' }),
+      ),
+    ).toEqual([expect.stringMatching(/^MONGODB_TIMEOUT_MS: /)]);
+  });
+
+  const url = { RABBITMQ_URL: 'amqp://broker' };
+
+  it('AMQP_HEARTBEAT_S accepts the largest value of the 16-bit field of connection.tune-ok', () => {
+    expect(loadConfig(rabbitmq, { ...url, AMQP_HEARTBEAT_S: '65535' }).AMQP_HEARTBEAT_S).toBe(
+      65_535,
+    );
+  });
+
+  it('AMQP_HEARTBEAT_S rejects one second more, naming the variable', () => {
+    expect(problemsOf(() => loadConfig(rabbitmq, { ...url, AMQP_HEARTBEAT_S: '65536' }))).toEqual([
+      expect.stringMatching(/^AMQP_HEARTBEAT_S: /),
+    ]);
   });
 });

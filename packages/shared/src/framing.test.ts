@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
 import { exampleMessages } from './fixtures.js';
-import { FrameDecoder, FrameTooLongError, MAX_FRAME_BYTES, encodeFrame } from './framing.js';
+import {
+  FrameDecoder,
+  FrameTooLongError,
+  MAX_FRAME_BYTES,
+  decodeUtf8Strict,
+  encodeFrame,
+} from './framing.js';
 
 describe('encodeFrame', () => {
   it('serialises the message as one UTF-8 JSON line', () => {
@@ -34,9 +40,17 @@ describe('encodeFrame', () => {
 describe('FrameDecoder', () => {
   it('returns each complete line and keeps the unfinished tail', () => {
     const decoder = new FrameDecoder();
-    expect(decoder.push(Buffer.from('{"a":1}\n{"b":'))).toEqual({ ok: true, frames: ['{"a":1}'] });
+    expect(decoder.push(Buffer.from('{"a":1}\n{"b":'))).toEqual({
+      ok: true,
+      frames: ['{"a":1}'],
+      rejected: [],
+    });
     expect(decoder.pendingBytes).toBe(5);
-    expect(decoder.push(Buffer.from('2}\n'))).toEqual({ ok: true, frames: ['{"b":2}'] });
+    expect(decoder.push(Buffer.from('2}\n'))).toEqual({
+      ok: true,
+      frames: ['{"b":2}'],
+      rejected: [],
+    });
     expect(decoder.pendingBytes).toBe(0);
   });
 
@@ -90,7 +104,11 @@ describe('FrameDecoder', () => {
     const result = decoder.push(Buffer.from('123456789'));
     expect(result).toMatchObject({ ok: false, error: { bytes: 9, limit: 8 } });
     expect(decoder.pendingBytes).toBe(0);
-    expect(decoder.push(Buffer.from('{"a":1}\n'))).toEqual({ ok: true, frames: ['{"a":1}'] });
+    expect(decoder.push(Buffer.from('{"a":1}\n'))).toEqual({
+      ok: true,
+      frames: ['{"a":1}'],
+      rejected: [],
+    });
   });
 
   it('counts the buffered tail into the length of the line it belongs to', () => {
@@ -124,7 +142,11 @@ describe('FrameDecoder', () => {
 
   it('accepts a line and a tail of exactly the limit', () => {
     const decoder = new FrameDecoder(8);
-    expect(decoder.push(Buffer.from('12345678\n'))).toEqual({ ok: true, frames: ['12345678'] });
+    expect(decoder.push(Buffer.from('12345678\n'))).toEqual({
+      ok: true,
+      frames: ['12345678'],
+      rejected: [],
+    });
     expect(decoder.push(Buffer.from('abcdefgh')).ok).toBe(true);
     expect(decoder.pendingBytes).toBe(8);
   });
@@ -133,7 +155,11 @@ describe('FrameDecoder', () => {
     const decoder = new FrameDecoder(8);
     expect(decoder.push(Buffer.from('123456789\n')).ok).toBe(false);
     expect(decoder.pendingBytes).toBe(0);
-    expect(decoder.push(Buffer.from('{"a":1}\n'))).toEqual({ ok: true, frames: ['{"a":1}'] });
+    expect(decoder.push(Buffer.from('{"a":1}\n'))).toEqual({
+      ok: true,
+      frames: ['{"a":1}'],
+      rejected: [],
+    });
   });
 
   it('clears a non-empty buffered tail when the limit is exceeded', () => {
@@ -158,7 +184,7 @@ describe('FrameDecoder', () => {
     const b = new FrameDecoder(8);
     a.push(Buffer.from('ab'));
     expect(a.push(Buffer.from('cdefghij')).ok).toBe(false);
-    expect(b.push(Buffer.from('ok\n'))).toEqual({ ok: true, frames: ['ok'] });
+    expect(b.push(Buffer.from('ok\n'))).toEqual({ ok: true, frames: ['ok'], rejected: [] });
     expect(b.pendingBytes).toBe(0);
   });
 
@@ -205,14 +231,71 @@ describe('FrameDecoder', () => {
     expect(process.memoryUsage().heapUsed - before).toBeLessThan(4 * 1024 * 1024);
   });
 
-  // The spec promises invalid bytes become U+FFFD and never throw (shared-contract, decision 1).
-  it('replaces bytes that are not valid UTF-8 instead of throwing', () => {
+  // Invalid bytes are rejected, never repaired: repaired to U+FFFD inside a string value they would
+  // pass JSON and the schema (shared-contract spec, decision 1, amended 2026-09-13).
+  it('rejects a line that is not valid UTF-8 instead of repairing it, and keeps the stream usable', () => {
     const decoder = new FrameDecoder();
+    // An invalid byte inside a string value: repaired to U+FFFD it would pass JSON and the schema
+    // and be published as telemetry the device never sent.
+    const corrupt = Buffer.concat([
+      Buffer.from('{"a":"'),
+      Buffer.from([0xff]),
+      Buffer.from('"}\n'),
+    ]);
     const result = decoder.push(
-      Buffer.concat([Buffer.from('{"a":"'), Buffer.from([0xff]), Buffer.from('"}\n')]),
+      Buffer.concat([Buffer.from('{"before":1}\n'), corrupt, Buffer.from('{"after":2}\n')]),
     );
     expect(result.ok).toBe(true);
-    expect(result.frames).toEqual(['{"a":"\uFFFD"}']);
+    expect(result.frames).toEqual(['{"before":1}', '{"after":2}']);
+    expect(result.rejected.map((rejection) => [rejection.reason, rejection.bytes])).toEqual([
+      ['invalid_utf8', corrupt.length - 1],
+    ]);
+    expect(result.rejected[0]?.detail).toContain('utf-8');
+    expect(decoder.pendingBytes).toBe(0);
+  });
+
+  it('reports every invalid line of one chunk, and still returns the valid one between them', () => {
+    const decoder = new FrameDecoder();
+    const bad = (text: string) => Buffer.concat([Buffer.from(text), Buffer.from([0xff, 0x0a])]);
+    const result = decoder.push(
+      Buffer.concat([bad('{"a":"'), Buffer.from('{"ok":1}\n'), bad('{"b":"')]),
+    );
+    expect(result.frames).toEqual(['{"ok":1}']);
+    expect(result.rejected.map((rejection) => [rejection.reason, rejection.bytes])).toEqual([
+      ['invalid_utf8', 7],
+      ['invalid_utf8', 7],
+    ]);
+  });
+
+  it('rejects a line whose multi-byte character is cut off at the newline', () => {
+    const decoder = new FrameDecoder();
+    const truncated = Buffer.from('é', 'utf8').subarray(0, 1);
+    const result = decoder.push(
+      Buffer.concat([Buffer.from('{"a":"'), truncated, Buffer.from('"}\n')]),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.frames).toEqual([]);
+    expect(result.rejected.map((rejection) => rejection.reason)).toEqual(['invalid_utf8']);
+  });
+
+  it('rejects an invalid line that was buffered across chunks, with the whole line counted', () => {
+    const decoder = new FrameDecoder();
+    expect(decoder.push(Buffer.from('{"a":"ab')).rejected).toEqual([]);
+    const result = decoder.push(Buffer.concat([Buffer.from([0xc3, 0x28]), Buffer.from('"}\n')]));
+    expect(result.frames).toEqual([]);
+    expect(result.rejected.map((rejection) => [rejection.reason, rejection.bytes])).toEqual([
+      ['invalid_utf8', '{"a":"ab'.length + 2 + '"}'.length],
+    ]);
+    expect(decoder.push(Buffer.from('{"b":2}\n')).frames).toEqual(['{"b":2}']);
+  });
+
+  it('keeps a byte order mark as text rather than silently stripping it', () => {
+    const decoder = new FrameDecoder();
+    const result = decoder.push(
+      Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"a":1}\n')]),
+    );
+    expect(result.frames).toEqual(['\uFEFF{"a":1}']);
+    expect(result.rejected).toEqual([]);
   });
 
   // Every other growth case needs the tail buffer to grow one step. A single large continuation
@@ -238,7 +321,7 @@ describe('FrameDecoder', () => {
   it('treats an empty chunk as a no-op', () => {
     const decoder = new FrameDecoder();
     expect(decoder.push(Buffer.from('partial')).ok).toBe(true);
-    expect(decoder.push(Buffer.alloc(0))).toEqual({ ok: true, frames: [] });
+    expect(decoder.push(Buffer.alloc(0))).toEqual({ ok: true, frames: [], rejected: [] });
     expect(decoder.pendingBytes).toBe(7);
   });
 
@@ -247,5 +330,30 @@ describe('FrameDecoder', () => {
     const chunk = Buffer.concat(Object.values(exampleMessages).map(encodeFrame));
     const decoded = decoder.push(chunk).frames.map((line) => JSON.parse(line) as unknown);
     expect(decoded).toEqual(Object.values(exampleMessages));
+  });
+});
+
+describe('decodeUtf8Strict', () => {
+  it('decodes valid UTF-8, multi-byte characters included', () => {
+    expect(decodeUtf8Strict(Buffer.from('{"m":"přehřátí"}', 'utf8'))).toEqual({
+      ok: true,
+      text: '{"m":"přehřátí"}',
+    });
+  });
+
+  it('reports an invalid sequence instead of substituting U+FFFD', () => {
+    const result = decodeUtf8Strict(Buffer.from([0x61, 0xff, 0x62]));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.detail).toContain('utf-8');
+    }
+  });
+
+  it('reports a sequence cut off at the end', () => {
+    expect(decodeUtf8Strict(Buffer.from([0xe2, 0x82])).ok).toBe(false);
+  });
+
+  it('decodes an empty input to an empty string', () => {
+    expect(decodeUtf8Strict(Buffer.alloc(0))).toEqual({ ok: true, text: '' });
   });
 });

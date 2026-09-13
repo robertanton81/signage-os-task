@@ -168,6 +168,19 @@ export class DeviceConnection {
   #onData(chunk: Buffer): void {
     const { logger, publisher, instanceWindow } = this.#options;
     const result = this.#decoder.push(chunk);
+    // A line that is not valid UTF-8 has no identity to log: nothing in it was parsed.
+    for (const rejection of result.rejected) {
+      this.#rejected += 1;
+      logger.warn(
+        {
+          connectionId: this.connectionId,
+          reason: rejection.reason,
+          detail: rejection.detail,
+          bytes: rejection.bytes,
+        },
+        'frame rejected',
+      );
+    }
     let windowClosed = false;
     let instanceWindowClosed = false;
     for (const frame of result.frames) {

@@ -1,8 +1,18 @@
-import type { TelemetryMessage } from '@telemetry/shared';
+import { TIMER_MAX_MS, type TelemetryMessage } from '@telemetry/shared';
 
 import type { Random } from './random.js';
 
 export const CHAOS_MODES = ['duplicate', 'out-of-order', 'disconnect', 'restart'] as const;
+
+/** A connection chaos delay is drawn uniformly in `[(1 - spread) × interval, (1 + spread) × interval]`. */
+export const CHAOS_INTERVAL_SPREAD = 0.5;
+
+/**
+ * Largest `EMULATOR_CHAOS_INTERVAL_MS` whose longest possible draw still fits a Node timer: above
+ * TIMER_MAX_MS a `setTimeout` fires after 1 ms (shared `TIMER_MAX_MS`), and the draw, not the
+ * configured value, is what becomes the delay.
+ */
+export const CHAOS_INTERVAL_MAX_MS = Math.floor(TIMER_MAX_MS / (1 + CHAOS_INTERVAL_SPREAD));
 export type ChaosMode = (typeof CHAOS_MODES)[number];
 /** Derived rather than written out, so it cannot drift from CHAOS_MODES. */
 export type ConnectionChaosMode = Extract<ChaosMode, 'disconnect' | 'restart'>;
@@ -128,7 +138,10 @@ export class ChaosPolicy {
     if (first === undefined) return null;
     return {
       mode: this.#random.pick([first, ...rest]),
-      delayMs: this.#random.range(this.#intervalMs * 0.5, this.#intervalMs * 1.5),
+      delayMs: this.#random.range(
+        this.#intervalMs * (1 - CHAOS_INTERVAL_SPREAD),
+        this.#intervalMs * (1 + CHAOS_INTERVAL_SPREAD),
+      ),
     };
   }
 

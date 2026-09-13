@@ -1,8 +1,19 @@
-import { CONTRACT_VERSION, messageIdentity, type TelemetryMessage } from '@telemetry/shared';
+import {
+  CONTRACT_VERSION,
+  TIMER_MAX_MS,
+  messageIdentity,
+  type TelemetryMessage,
+} from '@telemetry/shared';
 import { describe, expect, it } from 'vitest';
 
-import { CHAOS_MODES, ChaosPolicy, parseChaosModes, type ChaosMode } from './chaos.js';
-import { createRandom } from './random.js';
+import {
+  CHAOS_INTERVAL_MAX_MS,
+  CHAOS_MODES,
+  ChaosPolicy,
+  parseChaosModes,
+  type ChaosMode,
+} from './chaos.js';
+import { createRandom, type Random } from './random.js';
 
 function message(seq: number): TelemetryMessage {
   return {
@@ -133,5 +144,26 @@ describe('ChaosPolicy connection modes', () => {
     for (let i = 0; i < 100; i += 1) {
       expect(chaos.nextConnectionChaos()?.mode).toBe('restart');
     }
+  });
+});
+
+describe('connection chaos delay at the largest allowed interval', () => {
+  it('never draws a delay above what a Node timer holds', () => {
+    const upper: Random = {
+      float: () => 1,
+      int: (_min, max) => max,
+      bool: () => true,
+      pick: (values) => values.at(-1) ?? values[0],
+      range: (_min, max) => max,
+    };
+    const chaos = new ChaosPolicy({
+      modes: ['disconnect'],
+      percent: 5,
+      intervalMs: CHAOS_INTERVAL_MAX_MS,
+      random: upper,
+    });
+    const next = chaos.nextConnectionChaos();
+    expect(next?.delayMs).toBeLessThanOrEqual(TIMER_MAX_MS);
+    expect(next?.delayMs).toBeGreaterThan(TIMER_MAX_MS - 2);
   });
 });

@@ -15,6 +15,7 @@ import {
   assertNever,
   backoffDelay,
   messageLogger,
+  settleWithin,
   type Logger,
   type TelemetryMessage,
 } from '@telemetry/shared';
@@ -106,11 +107,6 @@ type ModelHandle = {
 
 /** The connection and confirm channel of the attempt that reached `ready`. */
 type Link = { readonly handle: ModelHandle; readonly channel: ConfirmChannel };
-
-type Settled<T> =
-  | { outcome: 'resolved'; value: T }
-  | { outcome: 'rejected'; error: unknown }
-  | { outcome: 'timed_out' };
 
 /**
  * The amqplib shell around the pure state machine of `publisher-state.ts` (ingest spec, section
@@ -676,25 +672,5 @@ function nextTurn(): Promise<void> {
     setImmediate(() => {
       resolve();
     });
-  });
-}
-
-/**
- * Waits for `promise` at most `timeoutMs` and never rejects. A rejection that arrives after the
- * timeout is still handled, so it never becomes an unhandled rejection. The timer is cleared.
- */
-function settleWithin<T>(promise: Promise<T>, timeoutMs: number): Promise<Settled<T>> {
-  let timer: NodeJS.Timeout | undefined;
-  const timedOut = new Promise<Settled<T>>((resolve) => {
-    timer = setTimeout(() => {
-      resolve({ outcome: 'timed_out' });
-    }, timeoutMs);
-  });
-  const settled = promise.then(
-    (value): Settled<T> => ({ outcome: 'resolved', value }),
-    (error: unknown): Settled<T> => ({ outcome: 'rejected', error }),
-  );
-  return Promise.race([settled, timedOut]).finally(() => {
-    clearTimeout(timer);
   });
 }

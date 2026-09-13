@@ -1,7 +1,7 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
 
-import { assertNever, backoffDelay, type Logger } from '@telemetry/shared';
+import { assertNever, backoffDelay, settleWithin, type Logger } from '@telemetry/shared';
 
 import type { IngestHost } from './config.js';
 import type { Random } from './random.js';
@@ -23,6 +23,23 @@ const CONNECT_TIMEOUT_MS = 10_000;
 
 /** Hard cap on waiting for a socket to close during shutdown, before it is destroyed outright. */
 const CLOSE_TIMEOUT_MS = 1_000;
+
+/**
+ * How long one attempt waits for its DNS lookups before it connects with what has resolved.
+ *
+ * `dns.lookup` is `getaddrinfo(3)` on libuv's threadpool: it has no timeout of its own, cannot be
+ * cancelled, and takes however long the operating system's resolver takes (Node dns docs,
+ * "Implementation considerations"). Waiting for every hostname in turn would let one slow lookup
+ * hold back an address that already resolved, while the outbox fills and drops telemetry. The
+ * lookups therefore run together under this deadline, which only stops the waiting: a lookup
+ * that answers later finishes on its own and its answer is dropped.
+ */
+const RESOLVE_TIMEOUT_MS = 5_000;
+
+/** Every address of a hostname. An IP literal comes back at once, without the resolver. */
+export type LookupFn = (host: string) => Promise<readonly { address: string }[]>;
+
+const systemLookup: LookupFn = (host) => dns.lookup(host, { all: true });
 
 /**
  * Reconnect schedule of one device: Full Jitter in `[0, min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 **
@@ -49,6 +66,10 @@ export type DeviceConnectionOptions = {
   onWritable: () => void;
   /** Defaults to CONNECT_TIMEOUT_MS; only the tests shorten or lengthen it. */
   connectTimeoutMs?: number;
+  /** Defaults to RESOLVE_TIMEOUT_MS; only the tests shorten it. */
+  resolveTimeoutMs?: number;
+  /** Defaults to the system resolver; the tests inject a lookup that never answers. */
+  lookup?: LookupFn;
 };
 
 /**
@@ -64,6 +85,8 @@ export class DeviceConnection {
   readonly #logger: Logger;
   readonly #onWritable: () => void;
   readonly #connectTimeoutMs: number;
+  readonly #resolveTimeoutMs: number;
+  readonly #lookup: LookupFn;
   #state: ConnectionState = { name: 'idle' };
 
   constructor(options: DeviceConnectionOptions) {
@@ -73,6 +96,8 @@ export class DeviceConnection {
     this.#logger = options.logger;
     this.#onWritable = options.onWritable;
     this.#connectTimeoutMs = options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS;
+    this.#resolveTimeoutMs = options.resolveTimeoutMs ?? RESOLVE_TIMEOUT_MS;
+    this.#lookup = options.lookup ?? systemLookup;
   }
 
   get state(): ConnectionState {
@@ -167,29 +192,55 @@ export class DeviceConnection {
   }
 
   /**
-   * Resolves every configured host, pools the addresses and picks one at random.
+   * Resolves every configured host at once, pools the addresses that answered within the deadline
+   * and picks one at random.
    *
    * Re-resolving on every attempt is what spreads devices over ingest replicas and lets a device
    * find a replica that did not exist when it first connected. A host that fails to resolve is
    * skipped rather than fatal: `ENOTFOUND` is documented to cover more than "no such name" — a
    * shortage of file descriptors reports the same code — so treating it as a configuration error
-   * would let a transient condition kill the process.
+   * would let a transient condition kill the process. A host still resolving at the deadline is
+   * skipped for this attempt only; with no address at all the attempt fails into backoff.
    */
   async #resolveAndConnect(attempt: number): Promise<void> {
     if (this.#isStopped()) return;
     this.#state = { name: 'resolving' };
 
     const addresses: IngestHost[] = [];
-    for (const entry of this.#hosts) {
+    let deadlinePassed = false;
+    const lookups = this.#hosts.map(async (entry) => {
       try {
-        const resolved = await dns.lookup(entry.host, { all: true });
+        const resolved = await this.#lookup(entry.host);
+        if (deadlinePassed) {
+          this.#logger.debug(
+            { deviceId: this.#deviceId, host: entry.host },
+            'dns lookup answered after the deadline',
+          );
+          return;
+        }
         for (const { address } of resolved) addresses.push({ host: address, port: entry.port });
       } catch (error) {
-        this.#logger.warn(
-          { deviceId: this.#deviceId, host: entry.host, err: error },
-          'dns lookup failed',
-        );
+        const fields = { deviceId: this.#deviceId, host: entry.host, err: error };
+        if (deadlinePassed) {
+          this.#logger.debug(fields, 'dns lookup failed after the deadline');
+        } else {
+          this.#logger.warn(fields, 'dns lookup failed');
+        }
       }
+    });
+    // Each lookup handles its own failure, so the only outcomes are resolved and timed out.
+    const waited = await settleWithin(Promise.all(lookups), this.#resolveTimeoutMs);
+    if (waited.outcome === 'timed_out') {
+      deadlinePassed = true;
+      this.#logger.warn(
+        {
+          deviceId: this.#deviceId,
+          resolved: addresses.length,
+          hosts: this.#hosts.length,
+          timeoutMs: this.#resolveTimeoutMs,
+        },
+        'dns lookup deadline reached',
+      );
     }
 
     // `stopped` can arrive while awaiting the lookups.

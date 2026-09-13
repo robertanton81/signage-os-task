@@ -136,6 +136,110 @@ describe('DeviceConnection', () => {
     expect((JSON.parse(lines[0] ?? '{}') as TelemetryMessage).seq).toBe(1);
   });
 
+  it('connects through the address that resolved while another lookup never answers', async () => {
+    const target = await sink();
+    const connection = new DeviceConnection({
+      deviceId: 'dev-0001',
+      hosts: [
+        { host: 'slow.test', port: 1 },
+        { host: 'fast.test', port: target.port },
+      ],
+      random: createRandom(3),
+      logger: silentLogger(),
+      onWritable: () => connection.write(frame(1)),
+      resolveTimeoutMs: 100,
+      // `dns.lookup` has no timeout: a resolver that never answers looks exactly like this.
+      lookup: (host) =>
+        host === 'fast.test'
+          ? Promise.resolve([{ address: '127.0.0.1' }])
+          : new Promise(() => undefined),
+    });
+    open.connections.push(connection);
+    connection.start();
+
+    const lines = await target.waitForLines(1);
+    expect((JSON.parse(lines[0] ?? '{}') as TelemetryMessage).seq).toBe(1);
+  });
+
+  it('stops waiting at the deadline and backs off when no lookup answered', async () => {
+    const lines: Array<Record<string, unknown>> = [];
+    const logger = createLogger({
+      service: 'test',
+      level: 'debug',
+      destination: {
+        write: (line: string) => {
+          lines.push(JSON.parse(line) as Record<string, unknown>);
+        },
+      },
+    });
+    const connection = new DeviceConnection({
+      deviceId: 'dev-0001',
+      hosts: [{ host: 'slow.test', port: 1 }],
+      random: fixedRandom(0.5),
+      logger,
+      onWritable: () => undefined,
+      resolveTimeoutMs: 20,
+      lookup: () => new Promise(() => undefined),
+    });
+    open.connections.push(connection);
+    connection.start();
+
+    await vi.waitFor(() => {
+      expect(connection.state.name).toBe('backoff');
+    });
+    const deadline = lines.filter((line) => line.msg === 'dns lookup deadline reached');
+    expect(deadline.map((line) => [line.resolved, line.hosts])).toEqual([[0, 1]]);
+  });
+
+  it('drops a lookup that answers after the deadline, and only logs it at debug', async () => {
+    const lines: Array<Record<string, unknown>> = [];
+    const logger = createLogger({
+      service: 'test',
+      level: 'debug',
+      destination: {
+        write: (line: string) => {
+          lines.push(JSON.parse(line) as Record<string, unknown>);
+        },
+      },
+    });
+    const late = new Map<
+      string,
+      { resolve: (value: { address: string }[]) => void; reject: (error: Error) => void }
+    >();
+    const connection = new DeviceConnection({
+      deviceId: 'dev-0001',
+      hosts: [
+        { host: 'late-answer.test', port: 1 },
+        { host: 'late-failure.test', port: 1 },
+      ],
+      random: fixedRandom(0.5),
+      logger,
+      onWritable: () => undefined,
+      resolveTimeoutMs: 20,
+      lookup: (host) =>
+        new Promise((resolve, reject) => {
+          late.set(host, { resolve, reject });
+        }),
+    });
+    open.connections.push(connection);
+    connection.start();
+    await vi.waitFor(() => {
+      expect(connection.state.name).toBe('backoff');
+    });
+    await connection.stop();
+
+    late.get('late-answer.test')?.resolve([{ address: '127.0.0.1' }]);
+    late.get('late-failure.test')?.reject(new Error('ENOTFOUND'));
+    await vi.waitFor(() => {
+      const after = lines.filter((line) => String(line.msg).endsWith('after the deadline'));
+      expect(after.map((line) => [line.level, line.msg, line.host])).toEqual([
+        [20, 'dns lookup answered after the deadline', 'late-answer.test'],
+        [20, 'dns lookup failed after the deadline', 'late-failure.test'],
+      ]);
+    });
+    expect(lines.filter((line) => line.msg === 'dns lookup failed')).toEqual([]);
+  });
+
   it('takes the frame that fills the buffer, then refuses frames until the peer reads again', async () => {
     // The one thing worth testing here, and the reason these tests use a real socket at all: a
     // mocked socket would only test the mock's idea of when `write()` returns false.
@@ -278,12 +382,16 @@ describe('DeviceConnection', () => {
     vi.isFakeTimers();
     const timeouts = vi.spyOn(globalThis, 'setTimeout');
     try {
+      // Every attempt also arms the DNS deadline timer; a value no retry can produce makes it
+      // recognisable, so it is filtered out of the recorded calls below.
+      const resolveTimeoutMs = 1_234;
       const connection = new DeviceConnection({
         deviceId: 'dev-0001',
         hosts: [{ host: '127.0.0.1', port }],
         random: fixedRandom(0.01),
         logger: silentLogger(),
         onWritable: () => undefined,
+        resolveTimeoutMs,
       });
       open.connections.push(connection);
       connection.start();
@@ -299,8 +407,10 @@ describe('DeviceConnection', () => {
       await connection.stop();
 
       // `vi.waitFor` itself polls with the timers vitest saved at worker setup, so with the probe
-      // above out of the way every recorded call is a retry the connection scheduled.
+      // above out of the way every recorded call is either the DNS deadline of an attempt or a
+      // retry the connection scheduled.
       const delays = timeouts.mock.calls
+        .filter(([, ms]) => ms !== resolveTimeoutMs)
         .slice(0, 6)
         .map(([, ms]) => Math.round((ms ?? Number.NaN) * 1_000) / 1_000);
       expect(delays).toEqual([5, 10, 20, 40, 80, 100]);

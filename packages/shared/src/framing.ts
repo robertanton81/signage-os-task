@@ -19,13 +19,50 @@ export class FrameTooLongError extends Error {
   }
 }
 
+/** A completed line that is not valid UTF-8. The line is dropped; the stream stays usable. */
+export type FrameRejection = { reason: 'invalid_utf8'; bytes: number; detail: string };
+
 /**
- * What one `push` produced. `frames` is on both branches so the lines decoded before an oversized
- * one cannot be dropped by accident; `error` says the decoder gave up on the stream and the caller
- * should close the connection (shared-contract spec, decision 1).
+ * What one `push` produced. `frames` and `rejected` are on both branches so the lines decoded
+ * before an oversized one cannot be dropped by accident; `error` says the decoder gave up on the
+ * stream and the caller should close the connection (shared-contract spec, decision 1). The order
+ * between accepted and rejected lines is not kept: a rejected line has no effect, so it has no place
+ * in the order.
  */
 export type FrameDecodeResult =
-  { ok: true; frames: string[] } | { ok: false; frames: string[]; error: FrameTooLongError };
+  | { ok: true; frames: string[]; rejected: readonly FrameRejection[] }
+  | { ok: false; frames: string[]; rejected: readonly FrameRejection[]; error: FrameTooLongError };
+
+/**
+ * Shared by every result without a rejection. A fresh array per `push` is one more object per
+ * call, and a device that sends one byte at a time makes 65 536 calls per line; the memory test
+ * on that drip measures raw heap growth and would count them.
+ */
+const NO_REJECTIONS: readonly FrameRejection[] = Object.freeze([]);
+
+export type Utf8DecodeResult = { ok: true; text: string } | { ok: false; detail: string };
+
+/**
+ * `fatal`: a byte sequence that is not valid UTF-8 throws instead of becoming U+FFFD. `ignoreBOM`:
+ * a leading byte order mark stays in the text, as `Buffer.toString` keeps it, so it still fails
+ * as JSON instead of being stripped in silence (Node `util.TextDecoder`). One instance serves every
+ * call: without `stream: true` a `decode()` keeps no state between calls.
+ */
+const STRICT_UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+
+/**
+ * Bytes to text, or a rejection. `Buffer.toString('utf8')` replaces invalid sequences with U+FFFD
+ * and never says so; inside a string value the result passes JSON and the schema, so a corrupted
+ * frame would be published as telemetry the device never sent. Both places that turn received bytes
+ * into a message — the frame decoder here and the AMQP body in processing — go through this.
+ */
+export function decodeUtf8Strict(bytes: Uint8Array): Utf8DecodeResult {
+  try {
+    return { ok: true, text: STRICT_UTF8.decode(bytes) };
+  } catch (error) {
+    return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+  }
+}
 
 /** One message per line: UTF-8 JSON followed by `\n` (shared-contract spec, decision 1). */
 export function encodeFrame(message: TelemetryMessage): Buffer {
@@ -61,12 +98,14 @@ export class FrameDecoder {
   }
 
   /**
-   * Returns every complete frame in the stream so far, without its newline. When a line or the
-   * buffered tail exceeds the limit the result is `ok: false`: the buffer is cleared, the rest of
-   * the chunk is not read, and the frames decoded before that point are still returned.
+   * Returns every complete frame in the stream so far, without its newline. A completed line that
+   * is not valid UTF-8 is reported in `rejected` and skipped. When a line or the buffered tail
+   * exceeds the limit the result is `ok: false`: the buffer is cleared, the rest of the chunk is
+   * not read, and the frames decoded before that point are still returned.
    */
   push(chunk: Buffer): FrameDecodeResult {
     const frames: string[] = [];
+    let rejected: FrameRejection[] | undefined;
     let start = 0;
     for (;;) {
       const end = chunk.indexOf(NEWLINE, start);
@@ -76,33 +115,51 @@ export class FrameDecoder {
       const lineBytes = this.#tailBytes + (end - start);
       if (lineBytes > this.#maxFrameBytes) {
         this.#reset();
-        return { ok: false, frames, error: new FrameTooLongError(lineBytes, this.#maxFrameBytes) };
+        return {
+          ok: false,
+          frames,
+          rejected: rejected ?? NO_REJECTIONS,
+          error: new FrameTooLongError(lineBytes, this.#maxFrameBytes),
+        };
       }
       const part = chunk.subarray(start, end);
       // Join before decoding, so a multi-byte character split across chunks is intact.
-      let line: string;
+      let decoded: Utf8DecodeResult;
       if (this.#tailBytes === 0) {
-        line = part.toString('utf8');
+        decoded = decodeUtf8Strict(part);
       } else {
         this.#append(part);
-        line = this.#tail.toString('utf8', 0, this.#tailBytes);
+        decoded = decodeUtf8Strict(this.#tail.subarray(0, this.#tailBytes));
       }
       this.#reset();
-      if (line.trim().length > 0) {
-        frames.push(line);
-      }
       start = end + 1;
+      if (!decoded.ok) {
+        (rejected ??= []).push({
+          reason: 'invalid_utf8',
+          bytes: lineBytes,
+          detail: decoded.detail,
+        });
+        continue;
+      }
+      if (decoded.text.trim().length > 0) {
+        frames.push(decoded.text);
+      }
     }
     const tail = chunk.subarray(start);
     const tailBytes = this.#tailBytes + tail.length;
     if (tailBytes > this.#maxFrameBytes) {
       this.#reset();
-      return { ok: false, frames, error: new FrameTooLongError(tailBytes, this.#maxFrameBytes) };
+      return {
+        ok: false,
+        frames,
+        rejected: rejected ?? NO_REJECTIONS,
+        error: new FrameTooLongError(tailBytes, this.#maxFrameBytes),
+      };
     }
     if (tail.length > 0) {
       this.#append(tail);
     }
-    return { ok: true, frames };
+    return { ok: true, frames, rejected: rejected ?? NO_REJECTIONS };
   }
 
   /** Copies `part` onto the tail, doubling the buffer when it no longer fits. */

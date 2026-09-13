@@ -12,21 +12,55 @@ export class ConfigError extends Error {
 }
 
 /**
- * Integer variable with a lower bound and a default. The default short-circuits parsing in zod 4,
- * so it is a number (the output type), not a string.
+ * The largest delay a Node timer holds. Above it `setTimeout` and `setInterval` fire after 1 ms
+ * ("When delay is larger than 2147483647 or less than 1 or NaN, the delay will be set to 1",
+ * timers docs) and a socket timeout is truncated to it, both with a `TimeoutOverflowWarning` on
+ * stderr that no log reader sees. Every variable that becomes a timer delay is bounded by it, so a
+ * shutdown budget of 2 147 483 648 ms is refused at startup instead of ending a drain at once.
+ */
+export const TIMER_MAX_MS = 2_147_483_647;
+
+/**
+ * The heartbeat interval travels in `connection.tune-ok` as a 16-bit field (AMQP 0-9-1 `short`;
+ * amqplib 2.0.1 `lib/defs.js` writes it with `writeUInt16BE`, which throws above this), and the
+ * timers derived from it in ingest — three intervals in milliseconds — stay far below TIMER_MAX_MS.
+ */
+export const AMQP_HEARTBEAT_MAX_S = 65_535;
+
+export type EnvIntOptions = {
+  min: number;
+  /** Omitted: unbounded. Every variable that feeds a timer passes TIMER_MAX_MS or a bound derived from it. */
+  max?: number;
+  defaultValue: number;
+};
+
+/**
+ * Integer variable with bounds and a default. The default short-circuits parsing in zod 4, so it
+ * is a number (the output type), not a string. A named object, because three numbers in a row
+ * would be indistinguishable at the call site (shared-contract spec, decision 14).
  *
  * Coercion is `Number()`, so `0x10` reads as 16 and `1e3` as 1000. Both are accepted on purpose:
  * they are what the operator wrote. `Infinity` and `1_000` are rejected as not a finite number.
  */
-export function envInt(min: number, defaultValue: number) {
-  if (Number.isNaN(min) || Number.isNaN(defaultValue) || defaultValue < min) {
-    // Fails when the module is imported, not when a service happens to read the variable:
-    // `.default()` short-circuits parsing, so an out-of-range default is never re-checked.
-    throw new Error(`envInt: default ${defaultValue} is below the minimum ${min}`);
-    // NaN is checked separately: every comparison against it is false, so the swap this guard
-    // exists to catch would pass in both directions.
+export function envInt({ min, max, defaultValue }: EnvIntOptions) {
+  // Fails when the module is imported, not when a service happens to read the variable:
+  // `.default()` short-circuits parsing, so an out-of-range default is never re-checked. NaN is
+  // checked first: every comparison against it is false, so the swaps these guards exist to catch
+  // would pass in both directions.
+  if (Number.isNaN(min) || Number.isNaN(defaultValue) || (max !== undefined && Number.isNaN(max))) {
+    throw new Error('envInt: a bound or the default is NaN');
   }
-  return z.coerce.number().int().min(min).default(defaultValue);
+  if (defaultValue < min) {
+    throw new Error(`envInt: default ${defaultValue} is below the minimum ${min}`);
+  }
+  if (max !== undefined && max < min) {
+    throw new Error(`envInt: maximum ${max} is below the minimum ${min}`);
+  }
+  if (max !== undefined && defaultValue > max) {
+    throw new Error(`envInt: default ${defaultValue} is above the maximum ${max}`);
+  }
+  const bounded = z.coerce.number().int().min(min);
+  return (max === undefined ? bounded : bounded.max(max)).default(defaultValue);
 }
 
 /**
@@ -79,7 +113,7 @@ export const logLevelEnv = {
 };
 
 export const shutdownEnv = {
-  SHUTDOWN_TIMEOUT_MS: envInt(0, 10_000),
+  SHUTDOWN_TIMEOUT_MS: envInt({ min: 0, max: TIMER_MAX_MS, defaultValue: 10_000 }),
 };
 
 /**
@@ -103,15 +137,12 @@ function isAmqpUrl(value: string): boolean {
 export const rabbitmqEnv = {
   // Fixed message text: the value can carry a password, and a ConfigError is logged on a bad deploy.
   RABBITMQ_URL: z.string().min(1).refine(isAmqpUrl, 'must be an amqp:// or amqps:// URL'),
-  AMQP_HEARTBEAT_S: envInt(1, 10),
+  AMQP_HEARTBEAT_S: envInt({ min: 1, max: AMQP_HEARTBEAT_MAX_S, defaultValue: 10 }),
 };
 
-/**
- * Port of the HTTP readiness endpoint (ingest spec, decision 17); processing reuses it in step 5.
- * Written out rather than `envInt`, because a `.max()` cannot follow `.default()`.
- */
+/** Port of the HTTP readiness endpoint (ingest spec, decision 17); processing reuses it in step 5. */
 export const healthEnv = {
-  HEALTH_PORT: z.coerce.number().int().min(1).max(65_535).default(8080),
+  HEALTH_PORT: envInt({ min: 1, max: 65_535, defaultValue: 8080 }),
 };
 
 export const mongodbEnv = {
@@ -119,5 +150,6 @@ export const mongodbEnv = {
   MONGODB_DB: z.string().min(1).default('telemetry'),
   /** `1` on the standalone development database; `majority` on a replica set (decision 20). */
   MONGODB_WRITE_W: z.union([z.literal('majority'), z.coerce.number().int().min(1)]).default(1),
-  MONGODB_TIMEOUT_MS: envInt(1, 5_000),
+  /** Becomes socket and server-side timeouts of the driver, so it is bounded like a timer. */
+  MONGODB_TIMEOUT_MS: envInt({ min: 1, max: TIMER_MAX_MS, defaultValue: 5_000 }),
 };

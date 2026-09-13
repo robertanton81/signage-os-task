@@ -1,6 +1,7 @@
 import {
   DEVICE_ID_MAX_LENGTH,
   DEVICE_ID_PATTERN,
+  TIMER_MAX_MS,
   envInt,
   loadConfig,
   logLevelEnv,
@@ -8,7 +9,7 @@ import {
 } from '@telemetry/shared';
 import { z } from 'zod';
 
-import { parseChaosModes, type ParseResult } from './chaos.js';
+import { CHAOS_INTERVAL_MAX_MS, parseChaosModes, type ParseResult } from './chaos.js';
 
 export type IngestHost = { host: string; port: number };
 
@@ -81,18 +82,23 @@ export const emulatorEnvSchema = z
   .object({
     ...logLevelEnv,
     ...shutdownEnv,
-    EMULATOR_DEVICE_COUNT: envInt(1, 10),
+    EMULATOR_DEVICE_COUNT: envInt({ min: 1, defaultValue: 10 }),
     EMULATOR_DEVICE_ID_PREFIX: z
       .string()
       .regex(/^[A-Za-z0-9_]+$/, 'must contain only letters, digits and underscores')
       .default('dev'),
-    EMULATOR_EVENT_INTERVAL_MS: envInt(1, 1_000),
-    EMULATOR_HEARTBEAT_MS: envInt(1, 30_000),
-    EMULATOR_OUTBOX_MAX: envInt(1, 1_000),
-    EMULATOR_SEED: envInt(0, 1),
-    // Written out rather than `envInt`: `.default()` produces a ZodDefault, which has no `.max()`.
-    EMULATOR_CHAOS_PERCENT: z.coerce.number().int().min(0).max(100).default(5),
-    EMULATOR_CHAOS_INTERVAL_MS: envInt(1_000, 60_000),
+    // The three intervals become `setTimeout` delays: above TIMER_MAX_MS Node fires them after 1 ms.
+    EMULATOR_EVENT_INTERVAL_MS: envInt({ min: 1, max: TIMER_MAX_MS, defaultValue: 1_000 }),
+    EMULATOR_HEARTBEAT_MS: envInt({ min: 1, max: TIMER_MAX_MS, defaultValue: 30_000 }),
+    EMULATOR_OUTBOX_MAX: envInt({ min: 1, defaultValue: 1_000 }),
+    EMULATOR_SEED: envInt({ min: 0, defaultValue: 1 }),
+    EMULATOR_CHAOS_PERCENT: envInt({ min: 0, max: 100, defaultValue: 5 }),
+    // The delay is drawn up to 1.5× the interval, so the bound is the timer limit divided by 1.5.
+    EMULATOR_CHAOS_INTERVAL_MS: envInt({
+      min: 1_000,
+      max: CHAOS_INTERVAL_MAX_MS,
+      defaultValue: 60_000,
+    }),
     EMULATOR_CHAOS: parsedString('', parseChaosModes),
     INGEST_HOSTS: parsedString('ingest:4000', parseIngestHosts),
   })

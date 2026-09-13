@@ -86,6 +86,20 @@ describe('loadIngestConfig', () => {
     },
   );
 
+  it('rejects an idle timeout above the limit Node timers accept, naming the variable', () => {
+    expect(
+      namesIn(
+        problemsOf(() => loadIngestConfig({ ...required, INGEST_SOCKET_IDLE_MS: '2147483648' })),
+      ),
+    ).toEqual(['INGEST_SOCKET_IDLE_MS']);
+  });
+
+  it('accepts an idle timeout at the limit Node timers accept', () => {
+    expect(
+      loadIngestConfig({ ...required, INGEST_SOCKET_IDLE_MS: '2147483647' }).INGEST_SOCKET_IDLE_MS,
+    ).toBe(2_147_483_647);
+  });
+
   it('names a missing RABBITMQ_URL', () => {
     expect(namesIn(problemsOf(() => loadIngestConfig({})))).toEqual(['RABBITMQ_URL']);
   });
