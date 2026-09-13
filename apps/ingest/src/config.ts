@@ -37,6 +37,8 @@ export const ingestEnvSchema = z
       .default(4000),
     INGEST_MAX_UNCONFIRMED: envInt({ min: 1, defaultValue: 256 }),
     INGEST_MAX_UNCONFIRMED_TOTAL: envInt({ min: 1, defaultValue: 20_000 }),
+    // A `setInterval` delay: above TIMER_MAX_MS Node fires it after 1 ms.
+    INGEST_PING_INTERVAL_MS: envInt({ min: 1, max: TIMER_MAX_MS, defaultValue: 30_000 }),
     // `socket.setTimeout` truncates a larger value with a warning on stderr; refuse it instead.
     INGEST_SOCKET_IDLE_MS: envInt({ min: 1, max: TIMER_MAX_MS, defaultValue: 90_000 }),
   })

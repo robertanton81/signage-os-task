@@ -9,8 +9,12 @@ const required = { RABBITMQ_URL: 'amqp://localhost' };
 const COUNTS = [
   'INGEST_MAX_UNCONFIRMED',
   'INGEST_MAX_UNCONFIRMED_TOTAL',
+  'INGEST_PING_INTERVAL_MS',
   'INGEST_SOCKET_IDLE_MS',
 ] as const;
+
+/** The variables that become a timer delay and are bounded by the limit Node timers accept. */
+const TIMERS = ['INGEST_PING_INTERVAL_MS', 'INGEST_SOCKET_IDLE_MS'] as const;
 
 function problemsOf(fn: () => unknown): string[] {
   try {
@@ -41,6 +45,7 @@ describe('loadIngestConfig', () => {
       INGEST_PORT: 4000,
       INGEST_MAX_UNCONFIRMED: 256,
       INGEST_MAX_UNCONFIRMED_TOTAL: 20_000,
+      INGEST_PING_INTERVAL_MS: 30_000,
       INGEST_SOCKET_IDLE_MS: 90_000,
     });
   });
@@ -86,18 +91,43 @@ describe('loadIngestConfig', () => {
     },
   );
 
-  it('rejects an idle timeout above the limit Node timers accept, naming the variable', () => {
-    expect(
-      namesIn(
-        problemsOf(() => loadIngestConfig({ ...required, INGEST_SOCKET_IDLE_MS: '2147483648' })),
-      ),
-    ).toEqual(['INGEST_SOCKET_IDLE_MS']);
+  it.each([...TIMERS])(
+    'rejects %s above the limit Node timers accept, naming the variable',
+    (name) => {
+      expect(
+        namesIn(problemsOf(() => loadIngestConfig({ ...required, [name]: '2147483648' }))),
+      ).toEqual([name]);
+    },
+  );
+
+  it.each([...TIMERS])('accepts %s at the limit Node timers accept', (name) => {
+    expect(loadIngestConfig({ ...required, [name]: '2147483647' })).toMatchObject({
+      [name]: 2_147_483_647,
+    });
   });
 
-  it('accepts an idle timeout at the limit Node timers accept', () => {
-    expect(
-      loadIngestConfig({ ...required, INGEST_SOCKET_IDLE_MS: '2147483647' }).INGEST_SOCKET_IDLE_MS,
-    ).toBe(2_147_483_647);
+  it.each(['abc', '50.5', ''])(
+    'reads INGEST_PING_INTERVAL_MS=%j as the default or a rejection',
+    (value) => {
+      if (value === '') {
+        // An empty value counts as unset: the default applies (.env.example).
+        expect(loadIngestConfig({ ...required, INGEST_PING_INTERVAL_MS: value })).toMatchObject({
+          INGEST_PING_INTERVAL_MS: 30_000,
+        });
+      } else {
+        expect(
+          namesIn(
+            problemsOf(() => loadIngestConfig({ ...required, INGEST_PING_INTERVAL_MS: value })),
+          ),
+        ).toEqual(['INGEST_PING_INTERVAL_MS']);
+      }
+    },
+  );
+
+  it('reads a short ping interval, as the tests set it', () => {
+    expect(loadIngestConfig({ ...required, INGEST_PING_INTERVAL_MS: '50' })).toMatchObject({
+      INGEST_PING_INTERVAL_MS: 50,
+    });
   });
 
   it('names a missing RABBITMQ_URL', () => {
