@@ -58,6 +58,8 @@ Hotovo 2026-09-12 podle `docs/specs/2026-09-12-emulator-design.md` a `docs/plans
 
 Opraveno 2026-09-13 podle `docs/plans/2026-09-13-emulator-delivery-fixes-plan.md` (4 commity `8931fc4..02d3c17`, testy emulátoru 100 → 104). Položky níže zůstávají hotové; opravy se týkaly dvojího odeslání zprávy při backpressure, ukončení procesu uprostřed shutdown drainu a obnovy ztraceného statusu během provozu.
 
+Změněno 2026-09-13 podle `docs/specs/2026-09-13-websocket-transport-design.md`: spojení zařízení → ingest je WebSocket (klient `ws`, cesta `/telemetry`, jedna zpráva na jeden textový WebSocket message). Položky níže zůstávají hotové; změnil se pouze transport.
+
 - [x] Konfigurovatelný počet zařízení a frekvence událostí (env / argumenty).
 - [x] Každé zařízení naváže dlouhodobé socketové spojení k ingest službě.
 - [x] Generování všech typů událostí v realistickém rytmu.
@@ -69,6 +71,8 @@ Opraveno 2026-09-13 podle `docs/plans/2026-09-13-emulator-delivery-fixes-plan.md
 ## 4. Socket ingest služba
 
 Hotovo 2026-09-13 podle `docs/specs/2026-09-13-ingest-design.md` a `docs/plans/2026-09-13-ingest-plan.md` (30 commitů `56c8dc7..`, 209 testů ingest, celkem 538). Skriptovaný běh proti RabbitMQ 4.3 prošel všemi šesti scénáři; výsledky jsou v hlavičce plánu.
+
+Změněno 2026-09-13 podle `docs/specs/2026-09-13-websocket-transport-design.md`: socket server je WebSocket server (`ws` 8.21.3 nad `http.Server`, cesta `/telemetry`); idle timeout nahradil WebSocket ping, shutdown posílá close code 1001. Položky níže zůstávají hotové; změnil se pouze transport.
 
 - [x] Socket server přijímající dlouhodobá spojení od zařízení.
 - [x] Parsování a validace příchozích zpráv sdíleným schématem. Nevalidní zprávu odmítnout a zalogovat, nikoli shodit spojení nebo službu.
