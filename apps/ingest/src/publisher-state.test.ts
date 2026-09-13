@@ -9,49 +9,99 @@ import {
   type LogEffectLevel,
   type PublisherEvent,
   type PublisherState,
+  type Transition,
 } from './publisher-state.js';
 
-/** The current generation of every state built below. */
+/** The current generation of every state below. */
 const G = 5;
 
-function backoff(attempt = 2, reason = 'connection_closed'): PublisherState {
-  return { name: 'backoff', generation: G, attempt, reason };
-}
-function connecting(blocked = false): PublisherState {
-  return { name: 'connecting', generation: G, attempt: 2, blocked, failed: false };
-}
-function failedConnecting(reason = 'channel_closed'): PublisherState {
-  return { name: 'connecting', generation: G, attempt: 2, blocked: false, failed: true, reason };
-}
-function ready(blocked = false, readySince = 1_000): PublisherState {
-  return { name: 'ready', generation: G, attempt: 2, blocked, readySince };
-}
-function recycling(attempt = 3, reason = 'nacked'): PublisherState {
-  return { name: 'recycling', generation: G, attempt, reason };
-}
+const backoff: PublisherState = {
+  name: 'backoff',
+  generation: G,
+  attempt: 2,
+  reason: 'connection_closed',
+};
+const connecting: PublisherState = {
+  name: 'connecting',
+  generation: G,
+  attempt: 2,
+  blocked: false,
+  failed: false,
+};
+const blockedConnecting: PublisherState = { ...connecting, blocked: true };
+const failedConnecting: PublisherState = {
+  name: 'connecting',
+  generation: G,
+  attempt: 2,
+  blocked: false,
+  failed: true,
+  reason: 'channel_closed',
+};
+// Reachable: a trigger on a blocked attempt, or a block on a failed one.
+const blockedFailedConnecting: PublisherState = { ...failedConnecting, blocked: true };
+const ready: PublisherState = {
+  name: 'ready',
+  generation: G,
+  attempt: 2,
+  blocked: false,
+  readySince: 1_000,
+};
+const blockedReady: PublisherState = { ...ready, blocked: true };
+const recycling: PublisherState = {
+  name: 'recycling',
+  generation: G,
+  attempt: 3,
+  reason: 'nacked',
+};
 const stopped: PublisherState = { name: 'stopped', generation: G };
+const toStopped: PublisherState = { name: 'stopped', generation: G + 1 };
 
+/** Event builders take every value explicitly, so no default can decide which branch a test hits. */
 const ev = {
   backoffElapsed: (generation = G): PublisherEvent => ({ type: 'backoff_elapsed', generation }),
-  attemptSucceeded: ({ now = 9_000, generation = G }: { now?: number; generation?: number } = {}) =>
-    ({ type: 'attempt_succeeded', generation, now }) satisfies PublisherEvent,
+  attemptSucceeded: ({
+    now,
+    generation = G,
+  }: {
+    now: number;
+    generation?: number;
+  }): PublisherEvent => ({
+    type: 'attempt_succeeded',
+    generation,
+    now,
+  }),
   attemptFailed: ({
-    reason = 'connect ECONNREFUSED',
+    reason,
     generation = G,
-  }: { reason?: string; generation?: number } = {}) =>
-    ({ type: 'attempt_failed', generation, reason }) satisfies PublisherEvent,
+  }: {
+    reason: string;
+    generation?: number;
+  }): PublisherEvent => ({
+    type: 'attempt_failed',
+    generation,
+    reason,
+  }),
   trigger: ({
-    reason = 'channel_closed',
-    now = 9_000,
+    reason,
+    now,
     generation = G,
-  }: { reason?: string; now?: number; generation?: number } = {}) =>
-    ({ type: 'trigger', generation, reason, now }) satisfies PublisherEvent,
+  }: {
+    reason: string;
+    now: number;
+    generation?: number;
+  }): PublisherEvent => ({ type: 'trigger', generation, reason, now }),
   closeFinished: (generation = G): PublisherEvent => ({ type: 'close_finished', generation }),
   blocked: ({
-    reason = 'low on memory',
+    reason,
     generation = G,
-  }: { reason?: string; generation?: number } = {}) =>
-    ({ type: 'blocked', generation, reason }) satisfies PublisherEvent,
+  }: {
+    reason: string;
+    generation?: number;
+  }): PublisherEvent => ({
+    type: 'blocked',
+    generation,
+    reason,
+  }),
   unblocked: (generation = G): PublisherEvent => ({ type: 'unblocked', generation }),
   stop: (): PublisherEvent => ({ type: 'stop' }),
 };
@@ -60,244 +110,362 @@ const ev = {
 function eventsAt(generation: number): PublisherEvent[] {
   return [
     ev.backoffElapsed(generation),
-    ev.attemptSucceeded({ generation }),
-    ev.attemptFailed({ generation }),
-    ev.trigger({ generation }),
+    ev.attemptSucceeded({ now: 0, generation }),
+    ev.attemptFailed({ reason: 'any', generation }),
+    ev.trigger({ reason: 'any', now: 0, generation }),
     ev.closeFinished(generation),
-    ev.blocked({ generation }),
+    ev.blocked({ reason: 'any', generation }),
     ev.unblocked(generation),
   ];
 }
 
-function logEffect(entry: {
+function log(entry: {
   level: LogEffectLevel;
   message: string;
   fields: Record<string, unknown>;
 }): Effect {
   return { type: 'log', ...entry };
 }
+const connected = (fields: { generation: number; attempt: number }): Effect =>
+  log({ level: 'info', message: 'publisher connected', fields });
+const triggerDuringAttempt = (reason: string): Effect =>
+  log({ level: 'debug', message: 'recycle trigger during a connect attempt', fields: { reason } });
+const blockedLine = (reason: string): Effect =>
+  log({ level: 'warn', message: 'connection blocked', fields: { reason } });
+const unblockedLine: Effect = log({ level: 'info', message: 'connection unblocked', fields: {} });
+const ignoredTrigger = (fields: { reason: string; state: string }): Effect =>
+  log({ level: 'debug', message: 'ignored a recycle trigger while not ready', fields });
+const stopping = (from: string): Effect =>
+  log({ level: 'info', message: 'publisher stopping', fields: { from } });
+const CLOSE_MODEL: Effect = { type: 'close_model' };
+const startBackoff = (entry: { attempt: number; reason: string }): Effect => ({
+  type: 'start_backoff',
+  ...entry,
+});
 
 const VARIANTS: { key: string; state: PublisherState }[] = [
-  { key: 'backoff', state: backoff() },
-  { key: 'connecting', state: connecting() },
-  { key: 'connecting-blocked', state: connecting(true) },
-  { key: 'connecting-failed', state: failedConnecting() },
-  { key: 'ready', state: ready() },
-  { key: 'ready-blocked', state: ready(true) },
-  { key: 'recycling', state: recycling() },
+  { key: 'backoff', state: backoff },
+  { key: 'connecting', state: connecting },
+  { key: 'connecting-blocked', state: blockedConnecting },
+  { key: 'connecting-failed', state: failedConnecting },
+  { key: 'connecting-blocked-failed', state: blockedFailedConnecting },
+  { key: 'ready', state: ready },
+  { key: 'ready-blocked', state: blockedReady },
+  { key: 'recycling', state: recycling },
   { key: 'stopped', state: stopped },
 ];
 
-/** The rows of the spec's transition table, as `variant:event` pairs. */
-const CONNECTING_EVENTS = [
-  'attempt_succeeded',
-  'attempt_failed',
-  'trigger',
-  'blocked',
-  'unblocked',
-  'stop',
-];
-const ROWS = new Set([
-  'backoff:backoff_elapsed',
-  'backoff:trigger',
-  'backoff:stop',
-  ...['connecting', 'connecting-blocked', 'connecting-failed'].flatMap((key) =>
-    CONNECTING_EVENTS.map((type) => `${key}:${type}`),
-  ),
-  'ready:trigger',
-  'ready:blocked',
-  'ready:stop',
-  'ready-blocked:trigger',
-  'ready-blocked:unblocked',
-  'ready-blocked:stop',
-  'recycling:close_finished',
-  'recycling:trigger',
-  'recycling:stop',
-]);
+type RowCase = { key: string; state: PublisherState; event: PublisherEvent; expected: Transition };
 
-describe('transition — one test per row of the table', () => {
-  it('backoff + backoff_elapsed: starts an attempt on a new generation after losing sent entries', () => {
-    expect(transition(backoff(), ev.backoffElapsed())).toEqual({
+/**
+ * Every row of the spec's table, expanded to every state variant it applies to. The unlisted-pair
+ * walk below skips exactly these pairs, so a pair can only be skipped when a case asserts it.
+ */
+const ROW_CASES: RowCase[] = [
+  // backoff
+  {
+    key: 'backoff',
+    state: backoff,
+    event: ev.backoffElapsed(),
+    expected: {
       state: { name: 'connecting', generation: G + 1, attempt: 2, blocked: false, failed: false },
       effects: [{ type: 'lose' }, { type: 'start_attempt' }],
-    });
-  });
-
-  it('connecting + attempt_succeeded: enters ready, publishes the pending entries, restarts the stall clock', () => {
-    expect(transition(connecting(), ev.attemptSucceeded({ now: 7_000 }))).toEqual({
+    },
+  },
+  {
+    key: 'backoff',
+    state: backoff,
+    event: ev.trigger({ reason: 'channel_closed', now: 9_000 }),
+    expected: {
+      state: backoff,
+      effects: [ignoredTrigger({ reason: 'channel_closed', state: 'backoff' })],
+    },
+  },
+  {
+    key: 'backoff',
+    state: backoff,
+    event: ev.stop(),
+    expected: { state: toStopped, effects: [stopping('backoff')] },
+  },
+  // connecting
+  {
+    key: 'connecting',
+    state: connecting,
+    event: ev.attemptSucceeded({ now: 7_000 }),
+    expected: {
       state: { name: 'ready', generation: G, attempt: 2, blocked: false, readySince: 7_000 },
       effects: [
         { type: 'send_pending' },
         { type: 'restart_stall_clock' },
-        logEffect({
-          level: 'info',
-          message: 'publisher connected',
-          fields: { generation: G, attempt: 2 },
-        }),
+        connected({ generation: G, attempt: 2 }),
       ],
-    });
-  });
-
-  it('failed connecting + attempt_succeeded: closes the new model and backs off with the trigger reason', () => {
-    expect(transition(failedConnecting('channel_closed'), ev.attemptSucceeded())).toEqual({
-      state: { name: 'backoff', generation: G, attempt: 3, reason: 'channel_closed' },
-      effects: [
-        { type: 'close_model' },
-        { type: 'start_backoff', attempt: 3, reason: 'channel_closed' },
-      ],
-    });
-  });
-
-  it('connecting + attempt_failed: backs off one attempt further with the failure reason', () => {
-    expect(transition(connecting(), ev.attemptFailed({ reason: 'connect ECONNREFUSED' }))).toEqual({
-      state: { name: 'backoff', generation: G, attempt: 3, reason: 'connect ECONNREFUSED' },
-      effects: [{ type: 'start_backoff', attempt: 3, reason: 'connect ECONNREFUSED' }],
-    });
-  });
-
-  it('failed connecting + attempt_failed: backs off with the trigger reason, the root cause', () => {
-    expect(
-      transition(failedConnecting('channel_closed'), ev.attemptFailed({ reason: 'setup aborted' })),
-    ).toEqual({
-      state: { name: 'backoff', generation: G, attempt: 3, reason: 'channel_closed' },
-      effects: [{ type: 'start_backoff', attempt: 3, reason: 'channel_closed' }],
-    });
-  });
-
-  it('connecting + trigger: marks the attempt failed and keeps the reason', () => {
-    expect(transition(connecting(), ev.trigger({ reason: 'channel_closed' }))).toEqual({
-      state: {
-        name: 'connecting',
-        generation: G,
-        attempt: 2,
-        blocked: false,
-        failed: true,
-        reason: 'channel_closed',
-      },
-      effects: [
-        logEffect({
-          level: 'debug',
-          message: 'recycle trigger during a connect attempt',
-          fields: { reason: 'channel_closed' },
-        }),
-      ],
-    });
-  });
-
-  it('failed connecting + trigger: keeps the first reason', () => {
-    const state = failedConnecting('channel_closed');
-    const result = transition(state, ev.trigger({ reason: 'connection_closed' }));
-
-    expect(result.state).toBe(state);
-    expect(result.effects).toEqual([
-      logEffect({
-        level: 'debug',
-        message: 'recycle trigger during a connect attempt',
-        fields: { reason: 'connection_closed' },
-      }),
-    ]);
-  });
-
-  it('connecting + blocked: records the block', () => {
-    expect(transition(connecting(), ev.blocked({ reason: 'low on memory' }))).toEqual({
-      state: { name: 'connecting', generation: G, attempt: 2, blocked: true, failed: false },
-      effects: [
-        logEffect({
-          level: 'warn',
-          message: 'connection blocked',
-          fields: { reason: 'low on memory' },
-        }),
-      ],
-    });
-  });
-
-  it('connecting + unblocked: clears the block', () => {
-    expect(transition(connecting(true), ev.unblocked())).toEqual({
-      state: { name: 'connecting', generation: G, attempt: 2, blocked: false, failed: false },
-      effects: [logEffect({ level: 'info', message: 'connection unblocked', fields: {} })],
-    });
-  });
-
-  it('ready + trigger: recycles on a new generation, loses sent entries and closes the model', () => {
-    expect(transition(ready(false, 1_000), ev.trigger({ reason: 'nacked', now: 3_000 }))).toEqual({
-      state: { name: 'recycling', generation: G + 1, attempt: 3, reason: 'nacked' },
-      effects: [{ type: 'lose' }, { type: 'close_model' }],
-    });
-  });
-
-  it('recycling + close_finished: starts the backoff with the recycle attempt and reason', () => {
-    expect(transition(recycling(0, 'confirm_stall'), ev.closeFinished())).toEqual({
-      state: { name: 'backoff', generation: G, attempt: 0, reason: 'confirm_stall' },
-      effects: [{ type: 'start_backoff', attempt: 0, reason: 'confirm_stall' }],
-    });
-  });
-
-  it('ready + blocked: stays ready but blocked', () => {
-    expect(transition(ready(), ev.blocked({ reason: 'low on disk' }))).toEqual({
-      state: { name: 'ready', generation: G, attempt: 2, blocked: true, readySince: 1_000 },
-      effects: [
-        logEffect({
-          level: 'warn',
-          message: 'connection blocked',
-          fields: { reason: 'low on disk' },
-        }),
-      ],
-    });
-  });
-
-  it('blocked ready + unblocked: unblocks and restarts the stall clock', () => {
-    expect(transition(ready(true), ev.unblocked())).toEqual({
-      state: { name: 'ready', generation: G, attempt: 2, blocked: false, readySince: 1_000 },
-      effects: [
-        { type: 'restart_stall_clock' },
-        logEffect({ level: 'info', message: 'connection unblocked', fields: {} }),
-      ],
-    });
-  });
-
-  it.each([
-    { key: 'recycling', state: recycling() },
-    { key: 'backoff', state: backoff() },
-  ])('$key + trigger: ignores it with a debug line', ({ state }) => {
-    const result = transition(state, ev.trigger({ reason: 'channel_closed' }));
-
-    expect(result.state).toBe(state);
-    expect(result.effects).toEqual([
-      logEffect({
-        level: 'debug',
-        message: 'ignored a recycle trigger while not ready',
-        fields: { reason: 'channel_closed', state: state.name },
-      }),
-    ]);
-  });
-
-  it.each([
-    { key: 'backoff', state: backoff(), closesModel: false },
-    { key: 'connecting', state: connecting(), closesModel: true },
-    { key: 'connecting-failed', state: failedConnecting(), closesModel: true },
-    { key: 'ready', state: ready(), closesModel: true },
-    { key: 'ready-blocked', state: ready(true), closesModel: true },
-    { key: 'recycling', state: recycling(), closesModel: true },
-  ])(
-    '$key + stop: stops on a new generation (closes a model: $closesModel)',
-    ({ state, closesModel }) => {
-      const stopping = logEffect({
-        level: 'info',
-        message: 'publisher stopping',
-        fields: { from: state.name },
-      });
-
-      expect(transition(state, ev.stop())).toEqual({
-        state: { name: 'stopped', generation: G + 1 },
-        effects: closesModel ? [{ type: 'close_model' }, stopping] : [stopping],
-      });
     },
-  );
+  },
+  {
+    key: 'connecting',
+    state: connecting,
+    event: ev.attemptFailed({ reason: 'connect ECONNREFUSED' }),
+    expected: {
+      state: { name: 'backoff', generation: G, attempt: 3, reason: 'connect ECONNREFUSED' },
+      effects: [startBackoff({ attempt: 3, reason: 'connect ECONNREFUSED' })],
+    },
+  },
+  {
+    key: 'connecting',
+    state: connecting,
+    event: ev.trigger({ reason: 'channel_closed', now: 9_000 }),
+    expected: { state: failedConnecting, effects: [triggerDuringAttempt('channel_closed')] },
+  },
+  {
+    key: 'connecting',
+    state: connecting,
+    event: ev.blocked({ reason: 'low on memory' }),
+    expected: { state: blockedConnecting, effects: [blockedLine('low on memory')] },
+  },
+  {
+    key: 'connecting',
+    state: connecting,
+    event: ev.unblocked(),
+    expected: { state: connecting, effects: [unblockedLine] },
+  },
+  {
+    key: 'connecting',
+    state: connecting,
+    event: ev.stop(),
+    expected: { state: toStopped, effects: [CLOSE_MODEL, stopping('connecting')] },
+  },
+  // connecting, blocked
+  {
+    key: 'connecting-blocked',
+    state: blockedConnecting,
+    event: ev.attemptSucceeded({ now: 7_000 }),
+    expected: {
+      state: { name: 'ready', generation: G, attempt: 2, blocked: true, readySince: 7_000 },
+      effects: [
+        { type: 'send_pending' },
+        { type: 'restart_stall_clock' },
+        connected({ generation: G, attempt: 2 }),
+      ],
+    },
+  },
+  {
+    key: 'connecting-blocked',
+    state: blockedConnecting,
+    event: ev.attemptFailed({ reason: 'connect ECONNREFUSED' }),
+    expected: {
+      state: { name: 'backoff', generation: G, attempt: 3, reason: 'connect ECONNREFUSED' },
+      effects: [startBackoff({ attempt: 3, reason: 'connect ECONNREFUSED' })],
+    },
+  },
+  {
+    key: 'connecting-blocked',
+    state: blockedConnecting,
+    event: ev.trigger({ reason: 'channel_closed', now: 9_000 }),
+    expected: { state: blockedFailedConnecting, effects: [triggerDuringAttempt('channel_closed')] },
+  },
+  {
+    key: 'connecting-blocked',
+    state: blockedConnecting,
+    event: ev.blocked({ reason: 'low on disk' }),
+    expected: { state: blockedConnecting, effects: [blockedLine('low on disk')] },
+  },
+  {
+    key: 'connecting-blocked',
+    state: blockedConnecting,
+    event: ev.unblocked(),
+    expected: { state: connecting, effects: [unblockedLine] },
+  },
+  {
+    key: 'connecting-blocked',
+    state: blockedConnecting,
+    event: ev.stop(),
+    expected: { state: toStopped, effects: [CLOSE_MODEL, stopping('connecting')] },
+  },
+  // connecting, failed with reason channel_closed
+  {
+    key: 'connecting-failed',
+    state: failedConnecting,
+    event: ev.attemptSucceeded({ now: 7_000 }),
+    expected: {
+      state: { name: 'backoff', generation: G, attempt: 3, reason: 'channel_closed' },
+      effects: [CLOSE_MODEL, startBackoff({ attempt: 3, reason: 'channel_closed' })],
+    },
+  },
+  {
+    key: 'connecting-failed',
+    state: failedConnecting,
+    event: ev.attemptFailed({ reason: 'setup aborted' }),
+    expected: {
+      state: { name: 'backoff', generation: G, attempt: 3, reason: 'channel_closed' },
+      effects: [startBackoff({ attempt: 3, reason: 'channel_closed' })],
+    },
+  },
+  {
+    key: 'connecting-failed',
+    state: failedConnecting,
+    event: ev.trigger({ reason: 'connection_closed', now: 9_000 }),
+    expected: { state: failedConnecting, effects: [triggerDuringAttempt('connection_closed')] },
+  },
+  {
+    key: 'connecting-failed',
+    state: failedConnecting,
+    event: ev.blocked({ reason: 'low on memory' }),
+    expected: { state: blockedFailedConnecting, effects: [blockedLine('low on memory')] },
+  },
+  {
+    key: 'connecting-failed',
+    state: failedConnecting,
+    event: ev.unblocked(),
+    expected: { state: failedConnecting, effects: [unblockedLine] },
+  },
+  {
+    key: 'connecting-failed',
+    state: failedConnecting,
+    event: ev.stop(),
+    expected: { state: toStopped, effects: [CLOSE_MODEL, stopping('connecting')] },
+  },
+  // connecting, blocked and failed with reason channel_closed
+  {
+    key: 'connecting-blocked-failed',
+    state: blockedFailedConnecting,
+    event: ev.attemptSucceeded({ now: 7_000 }),
+    expected: {
+      state: { name: 'backoff', generation: G, attempt: 3, reason: 'channel_closed' },
+      effects: [CLOSE_MODEL, startBackoff({ attempt: 3, reason: 'channel_closed' })],
+    },
+  },
+  {
+    key: 'connecting-blocked-failed',
+    state: blockedFailedConnecting,
+    event: ev.attemptFailed({ reason: 'setup aborted' }),
+    expected: {
+      state: { name: 'backoff', generation: G, attempt: 3, reason: 'channel_closed' },
+      effects: [startBackoff({ attempt: 3, reason: 'channel_closed' })],
+    },
+  },
+  {
+    key: 'connecting-blocked-failed',
+    state: blockedFailedConnecting,
+    event: ev.trigger({ reason: 'connection_closed', now: 9_000 }),
+    expected: {
+      state: blockedFailedConnecting,
+      effects: [triggerDuringAttempt('connection_closed')],
+    },
+  },
+  {
+    key: 'connecting-blocked-failed',
+    state: blockedFailedConnecting,
+    event: ev.blocked({ reason: 'low on disk' }),
+    expected: { state: blockedFailedConnecting, effects: [blockedLine('low on disk')] },
+  },
+  {
+    key: 'connecting-blocked-failed',
+    state: blockedFailedConnecting,
+    event: ev.unblocked(),
+    expected: { state: failedConnecting, effects: [unblockedLine] },
+  },
+  {
+    key: 'connecting-blocked-failed',
+    state: blockedFailedConnecting,
+    event: ev.stop(),
+    expected: { state: toStopped, effects: [CLOSE_MODEL, stopping('connecting')] },
+  },
+  // ready
+  {
+    key: 'ready',
+    state: ready,
+    event: ev.trigger({ reason: 'nacked', now: 3_000 }),
+    expected: {
+      state: { name: 'recycling', generation: G + 1, attempt: 3, reason: 'nacked' },
+      effects: [{ type: 'lose' }, CLOSE_MODEL],
+    },
+  },
+  {
+    key: 'ready',
+    state: ready,
+    event: ev.blocked({ reason: 'low on disk' }),
+    expected: { state: blockedReady, effects: [blockedLine('low on disk')] },
+  },
+  {
+    key: 'ready',
+    state: ready,
+    event: ev.stop(),
+    expected: { state: toStopped, effects: [CLOSE_MODEL, stopping('ready')] },
+  },
+  // ready, blocked
+  {
+    key: 'ready-blocked',
+    state: blockedReady,
+    event: ev.trigger({ reason: 'connection_closed', now: 3_000 }),
+    expected: {
+      state: { name: 'recycling', generation: G + 1, attempt: 3, reason: 'connection_closed' },
+      effects: [{ type: 'lose' }, CLOSE_MODEL],
+    },
+  },
+  {
+    key: 'ready-blocked',
+    state: blockedReady,
+    event: ev.unblocked(),
+    expected: { state: ready, effects: [{ type: 'restart_stall_clock' }, unblockedLine] },
+  },
+  {
+    key: 'ready-blocked',
+    state: blockedReady,
+    event: ev.stop(),
+    expected: { state: toStopped, effects: [CLOSE_MODEL, stopping('ready')] },
+  },
+  // recycling
+  {
+    key: 'recycling',
+    state: recycling,
+    event: ev.closeFinished(),
+    expected: {
+      state: { name: 'backoff', generation: G, attempt: 3, reason: 'nacked' },
+      effects: [startBackoff({ attempt: 3, reason: 'nacked' })],
+    },
+  },
+  {
+    key: 'recycling',
+    state: recycling,
+    event: ev.trigger({ reason: 'channel_closed', now: 9_000 }),
+    expected: {
+      state: recycling,
+      effects: [ignoredTrigger({ reason: 'channel_closed', state: 'recycling' })],
+    },
+  },
+  {
+    key: 'recycling',
+    state: recycling,
+    event: ev.stop(),
+    expected: { state: toStopped, effects: [CLOSE_MODEL, stopping('recycling')] },
+  },
+];
+
+const ROWS = new Set(ROW_CASES.map(({ key, event }) => `${key}:${event.type}`));
+
+describe('transition — every row of the table, for every state variant it applies to', () => {
+  it.each(ROW_CASES)('$key + $event.type', ({ state, event, expected }) => {
+    const before = structuredClone(state);
+
+    expect(transition(state, event)).toEqual(expected);
+    // Pure: the input state is never changed in place.
+    expect(state).toEqual(before);
+  });
+
+  it('lists each pair once, with the same states the walks below use', () => {
+    expect(ROWS.size).toBe(ROW_CASES.length);
+    for (const { key, state } of ROW_CASES) {
+      expect(VARIANTS.find((variant) => variant.key === key)?.state, key).toBe(state);
+    }
+  });
 });
 
-describe('transition — generations and unlisted pairs', () => {
-  it('starts in backoff on generation 0, and the first backoff_elapsed opens generation 1', () => {
+describe('transition — start, generations and unlisted pairs', () => {
+  it('starts in backoff on generation 0 with no attempt made', () => {
     expect(INITIAL_STATE).toEqual({ name: 'backoff', generation: 0, attempt: 0, reason: 'start' });
+  });
+
+  it('opens generation 1 on the first backoff_elapsed', () => {
     expect(transition(INITIAL_STATE, ev.backoffElapsed(0))).toEqual({
       state: { name: 'connecting', generation: 1, attempt: 0, blocked: false, failed: false },
       effects: [{ type: 'lose' }, { type: 'start_attempt' }],
@@ -364,21 +532,28 @@ describe('transition — generations and unlisted pairs', () => {
 
 describe('transition — race sequences', () => {
   it('a trigger during connecting fails the attempt, so its model never serves as ready', () => {
-    const failed = transition(connecting(), ev.trigger({ reason: 'channel_closed' })).state;
-    const result = transition(failed, ev.attemptSucceeded());
+    const failed = transition(connecting, ev.trigger({ reason: 'channel_closed', now: 9_000 }));
+    const result = transition(failed.state, ev.attemptSucceeded({ now: 9_500 }));
 
     expect(result).toEqual({
       state: { name: 'backoff', generation: G, attempt: 3, reason: 'channel_closed' },
-      effects: [
-        { type: 'close_model' },
-        { type: 'start_backoff', attempt: 3, reason: 'channel_closed' },
-      ],
+      effects: [CLOSE_MODEL, startBackoff({ attempt: 3, reason: 'channel_closed' })],
     });
     expect(isReady(result.state)).toBe(false);
   });
 
+  it('a block and then a trigger during connecting still back off with the trigger reason', () => {
+    const blocked = transition(connecting, ev.blocked({ reason: 'low on memory' })).state;
+    const failed = transition(blocked, ev.trigger({ reason: 'channel_closed', now: 9_000 })).state;
+
+    expect(transition(failed, ev.attemptSucceeded({ now: 9_500 }))).toEqual({
+      state: { name: 'backoff', generation: G, attempt: 3, reason: 'channel_closed' },
+      effects: [CLOSE_MODEL, startBackoff({ attempt: 3, reason: 'channel_closed' })],
+    });
+  });
+
   it('a block during connecting carries into ready, which is then not ready', () => {
-    const blocked = transition(connecting(), ev.blocked()).state;
+    const blocked = transition(connecting, ev.blocked({ reason: 'low on memory' })).state;
     const result = transition(blocked, ev.attemptSucceeded({ now: 4_000 }));
 
     expect(result.state).toEqual({
@@ -392,17 +567,21 @@ describe('transition — race sequences', () => {
   });
 
   it('a block and an unblock during connecting give a ready that is ready', () => {
-    const blocked = transition(connecting(), ev.blocked()).state;
+    const blocked = transition(connecting, ev.blocked({ reason: 'low on memory' })).state;
     const unblocked = transition(blocked, ev.unblocked()).state;
 
-    expect(isReady(transition(unblocked, ev.attemptSucceeded()).state)).toBe(true);
+    expect(isReady(transition(unblocked, ev.attemptSucceeded({ now: 4_000 })).state)).toBe(true);
   });
 
   it('starts every new attempt unblocked, also after a recycle from a blocked connection', () => {
-    const recycled = transition(ready(true), ev.trigger({ reason: 'connection_closed' })).state;
-    const backedOff = transition(recycled, ev.closeFinished(G + 1)).state;
+    // Ready since 1 000 and recycled at 9 000: under the reset period, so the attempt rises to 3.
+    const recycled = transition(
+      blockedReady,
+      ev.trigger({ reason: 'connection_closed', now: 9_000 }),
+    );
+    const backedOff = transition(recycled.state, ev.closeFinished(G + 1));
 
-    expect(transition(backedOff, ev.backoffElapsed(G + 1)).state).toEqual({
+    expect(transition(backedOff.state, ev.backoffElapsed(G + 1)).state).toEqual({
       name: 'connecting',
       generation: G + 2,
       attempt: 3,
@@ -412,37 +591,36 @@ describe('transition — race sequences', () => {
   });
 
   it('resets the attempt only after the connection was ready for the reset period', () => {
-    const since = 1_000;
+    // `ready` has been ready since 1 000.
     const recycleAt = (now: number): PublisherState =>
-      transition(ready(false, since), ev.trigger({ now })).state;
+      transition(ready, ev.trigger({ reason: 'nacked', now })).state;
 
     expect(BACKOFF_RESET_AFTER_MS).toBe(10_000);
-    expect(recycleAt(since + 10_000)).toMatchObject({ name: 'recycling', attempt: 0 });
-    expect(recycleAt(since + 9_999)).toMatchObject({ name: 'recycling', attempt: 3 });
+    expect(recycleAt(11_000)).toMatchObject({ name: 'recycling', attempt: 0 });
+    expect(recycleAt(10_999)).toMatchObject({ name: 'recycling', attempt: 3 });
   });
 
   it('carries the recycle reason and the reset attempt into the backoff', () => {
-    const recycled = transition(
-      ready(false, 0),
-      ev.trigger({ reason: 'confirm_stall', now: 60_000 }),
-    );
+    const readyAtZero: PublisherState = { ...ready, readySince: 0 };
+    const recycled = transition(readyAtZero, ev.trigger({ reason: 'confirm_stall', now: 60_000 }));
 
     expect(transition(recycled.state, ev.closeFinished(G + 1))).toEqual({
       state: { name: 'backoff', generation: G + 1, attempt: 0, reason: 'confirm_stall' },
-      effects: [{ type: 'start_backoff', attempt: 0, reason: 'confirm_stall' }],
+      effects: [startBackoff({ attempt: 0, reason: 'confirm_stall' })],
     });
   });
 });
 
 describe('isReady', () => {
   it.each([
-    { key: 'backoff', state: backoff(), expected: false },
-    { key: 'connecting', state: connecting(), expected: false },
-    { key: 'connecting-blocked', state: connecting(true), expected: false },
-    { key: 'connecting-failed', state: failedConnecting(), expected: false },
-    { key: 'ready', state: ready(), expected: true },
-    { key: 'ready-blocked', state: ready(true), expected: false },
-    { key: 'recycling', state: recycling(), expected: false },
+    { key: 'backoff', state: backoff, expected: false },
+    { key: 'connecting', state: connecting, expected: false },
+    { key: 'connecting-blocked', state: blockedConnecting, expected: false },
+    { key: 'connecting-failed', state: failedConnecting, expected: false },
+    { key: 'connecting-blocked-failed', state: blockedFailedConnecting, expected: false },
+    { key: 'ready', state: ready, expected: true },
+    { key: 'ready-blocked', state: blockedReady, expected: false },
+    { key: 'recycling', state: recycling, expected: false },
     { key: 'stopped', state: stopped, expected: false },
   ])('is $expected for $key', ({ state, expected }) => {
     expect(isReady(state)).toBe(expected);
