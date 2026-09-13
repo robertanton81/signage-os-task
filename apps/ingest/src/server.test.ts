@@ -1,12 +1,8 @@
 import { setTimeout as delay } from 'node:timers/promises';
 
-import {
-  MAX_FRAME_BYTES,
-  createLogger,
-  encodeFrame,
-  type TelemetryMessage,
-} from '@telemetry/shared';
+import { MAX_FRAME_BYTES, createLogger, type TelemetryMessage } from '@telemetry/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { WebSocket } from 'ws';
 
 import { loadIngestConfig, type IngestConfig } from './config.js';
 import type { DeviceConnection } from './connection.js';
@@ -16,8 +12,16 @@ import { connectTestDevice, type TestDevice } from './test-device.js';
 import { createTestPublisher, type TestPublisher } from './test-publisher.js';
 
 /** pino's numeric levels: the shared logger formats only the log object and the bindings. */
+const DEBUG = 20;
 const INFO = 30;
 const WARN = 40;
+
+/** Close codes of RFC 6455 §7.4.1 as the tests expect them. */
+const NORMAL_CLOSURE = 1000;
+const GOING_AWAY = 1001;
+const UNSUPPORTED_DATA = 1003;
+const ABNORMAL_CLOSURE = 1006;
+const MESSAGE_TOO_BIG = 1009;
 
 type LogLine = { level: number; msg: string; [field: string]: unknown };
 
@@ -29,12 +33,15 @@ const BASE_CONFIG: IngestConfig = {
   SHUTDOWN_TIMEOUT_MS: 200,
 };
 
+type ConnectOptions = { path?: string; autoPong?: boolean };
+
 type Harness = {
   server: IngestServer;
   publisher: TestPublisher;
   logs: LogLine[];
+  port: number;
   // A function-typed property, not a method: every test destructures it (`unbound-method`).
-  connect: (options?: { allowHalfOpen?: boolean }) => Promise<TestDevice>;
+  connect: (options?: ConnectOptions) => Promise<TestDevice>;
 };
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -68,10 +75,11 @@ async function startServer({
   const devices: TestDevice[] = [];
   cleanups.push(async () => {
     for (const device of devices) {
-      device.destroy();
+      device.socket.resume();
+      device.terminate();
     }
-    // A socket paused since it was accepted does not notice its peer's close, so every socket
-    // reads again and nothing waits for a confirm; the drain then ends as the sockets close.
+    // A connection paused since it was accepted does not notice its peer's close, so every
+    // connection reads again and nothing waits for a confirm; the drain then ends as they close.
     publisher.setReady(true);
     publisher.confirmAll();
     await server.shutdown();
@@ -80,6 +88,7 @@ async function startServer({
     server,
     publisher,
     logs,
+    port,
     connect: async (options = {}) => {
       const device = await connectTestDevice({ port, ...options });
       devices.push(device);
@@ -96,9 +105,13 @@ function linesWith(logs: readonly LogLine[], msg: string): LogLine[] {
   return logs.filter((line) => line.msg === msg);
 }
 
+function warnings(logs: readonly LogLine[]): LogLine[] {
+  return logs.filter((line) => line.level === WARN);
+}
+
 /**
- * The server registers a connection on its own `connection` event, which can run after the
- * client's `connect`, so the registry is polled until it holds `count` connections.
+ * The server registers a connection in the `handleUpgrade` callback, which can run after the
+ * client's `open`, so the registry is polled until it holds `count` connections.
  */
 async function connectionsOf(
   server: IngestServer,
@@ -119,12 +132,12 @@ async function onlyConnection(server: IngestServer): Promise<DeviceConnection> {
 }
 
 describe('IngestServer', () => {
-  it('publishes valid frames in arrival order, each with the time it was received', async () => {
+  it('publishes valid messages in arrival order, each with the time it was received', async () => {
     const { publisher, connect } = await startServer();
     const device = await connect();
     const before = Date.now();
-    device.writeMessage(exampleMessages.status);
-    device.writeMessage(exampleMessages.metrics);
+    device.sendMessage(exampleMessages.status);
+    device.sendMessage(exampleMessages.metrics);
 
     const requests = await publisher.waitForRequests(2);
     expect(requests.map((request) => request.message)).toEqual([
@@ -137,17 +150,17 @@ describe('IngestServer', () => {
     }
   });
 
-  it('logs an invalid frame with its reason, drops it and keeps the connection open', async () => {
+  it('logs an invalid message with its reason, drops it and keeps the connection open', async () => {
     const { server, publisher, logs, connect } = await startServer();
     const device = await connect();
-    device.write('not json\n');
-    device.write('{"v":1,"deviceId":"dev-0009","type":"bogus"}\n');
-    device.writeMessage(exampleMessages.counters);
+    device.send('not json');
+    device.send('{"v":1,"deviceId":"dev-0009","type":"bogus"}');
+    device.sendMessage(exampleMessages.counters);
 
     const [request] = await publisher.waitForRequests(1);
     expect(request?.message).toEqual(exampleMessages.counters);
     expect(publisher.requests).toHaveLength(1);
-    const rejected = linesWith(logs, 'frame rejected');
+    const rejected = linesWith(logs, 'message rejected');
     expect(rejected.map((line) => [line.level, line.reason])).toEqual([
       [WARN, 'invalid_json'],
       [WARN, 'invalid_schema'],
@@ -156,100 +169,71 @@ describe('IngestServer', () => {
     expect(rejected[1]?.deviceId).toBe('dev-0009');
     const connection = await onlyConnection(server);
     expect([connection.received, connection.rejected]).toEqual([1, 2]);
+    expect(device.ws.readyState).toBe(WebSocket.OPEN);
   });
 
-  it('rejects a frame that is not valid UTF-8 instead of repairing it, and keeps the connection open', async () => {
-    const { server, publisher, logs, connect } = await startServer();
+  it('closes a connection that sends a binary message with code 1003, after counting it', async () => {
+    const { server, logs, connect } = await startServer();
     const device = await connect();
-    // An invalid byte inside the diagnostic message: repaired to U+FFFD it would pass validation.
-    device.write(
-      Buffer.concat([
-        Buffer.from(
-          '{"v":1,"deviceId":"dev-0001","sessionId":1700000000000,"seq":1,"occurredAt":1,"type":"diagnostic","payload":{"severity":"error","code":"E","message":"',
-        ),
-        Buffer.from([0xff]),
-        Buffer.from('"}}\n'),
-      ]),
-    );
-    device.writeMessage(exampleMessages.status);
-
-    const [request] = await publisher.waitForRequests(1);
-    expect(request?.message).toEqual(exampleMessages.status);
-    expect(publisher.requests).toHaveLength(1);
-    const rejected = linesWith(logs, 'frame rejected');
-    expect(rejected.map((line) => [line.level, line.reason, typeof line.bytes])).toEqual([
-      [WARN, 'invalid_utf8', 'number'],
-    ]);
     const connection = await onlyConnection(server);
-    expect([connection.received, connection.rejected]).toEqual([1, 1]);
+    device.sendBinary(Buffer.from([1, 2, 3]));
+
+    expect(await device.closed).toEqual({ code: UNSUPPORTED_DATA, reason: 'text messages only' });
+    await connectionsOf(server, 0);
+    expect(linesWith(logs, 'binary message rejected')).toEqual([
+      expect.objectContaining({ level: WARN, connectionId: connection.connectionId, bytes: 3 }),
+    ]);
+    expect(linesWith(logs, 'connection closed')[0]).toMatchObject({
+      reason: 'binary',
+      closeCode: UNSUPPORTED_DATA,
+    });
+    expect(server.stats()).toMatchObject({ open: 0, rejected: 1 });
   });
 
-  it('closes a connection whose line exceeds the frame limit, after publishing the frame before it', async () => {
+  it('closes a connection whose message exceeds the limit, after publishing the one before it', async () => {
     const { server, publisher, logs, connect } = await startServer();
     const device = await connect();
     const connection = await onlyConnection(server);
-    device.write(
-      Buffer.concat([
-        encodeFrame(exampleMessages.status),
-        Buffer.alloc(MAX_FRAME_BYTES + 1, 0x61),
-        Buffer.from('\n'),
-      ]),
-    );
+    device.sendMessage(exampleMessages.status);
+    device.send('a'.repeat(MAX_FRAME_BYTES + 1));
 
-    await device.closed;
+    expect((await device.closed).code).toBe(MESSAGE_TOO_BIG);
     const [request] = await publisher.waitForRequests(1);
     expect(request?.message).toEqual(exampleMessages.status);
-    await vi.waitFor(() => {
-      expect(linesWith(logs, 'connection closed')[0]?.reason).toBe('frame_too_long');
-    });
-    const [tooLong] = linesWith(logs, 'frame too long');
-    expect(tooLong).toMatchObject({
-      level: WARN,
-      connectionId: connection.connectionId,
-      remote: connection.remote,
-      limit: MAX_FRAME_BYTES,
-    });
-    expect(Number(tooLong?.bytes)).toBeGreaterThan(MAX_FRAME_BYTES);
-  });
-
-  it('publishes a frame split across two chunks once', async () => {
-    const { server, publisher, connect } = await startServer();
-    const device = await connect();
-    const connection = await onlyConnection(server);
-    const bytes = encodeFrame(exampleMessages.diagnostic);
-    device.write(bytes.subarray(0, 20));
-    // The first part has been read before the rest is written, so the frame spans two chunks.
-    await vi.waitFor(() => {
-      expect(connection.pendingBytes).toBe(20);
-    });
-    device.write(bytes.subarray(20));
-    device.writeMessage(exampleMessages.status);
-
-    const requests = await publisher.waitForRequests(2);
-    expect(requests.map((request) => request.message)).toEqual([
-      exampleMessages.diagnostic,
-      exampleMessages.status,
+    await connectionsOf(server, 0);
+    expect(linesWith(logs, 'protocol violation')).toEqual([
+      expect.objectContaining({
+        level: WARN,
+        code: 'WS_ERR_UNSUPPORTED_MESSAGE_LENGTH',
+        connectionId: connection.connectionId,
+        remote: connection.remote,
+        lastDeviceId: 'dev-0001',
+      }),
     ]);
+    // `ws` ends the socket right after its own close frame, so no close frame comes back.
+    expect(linesWith(logs, 'connection closed')[0]).toMatchObject({
+      reason: 'protocol',
+      closeCode: ABNORMAL_CLOSURE,
+    });
   });
 
-  it('reads no socket while the publisher is not ready, and every socket while it is', async () => {
+  it('reads no connection while the publisher is not ready, and every connection while it is', async () => {
     const { server, publisher, connect } = await startServer({ ready: false });
     const first = await connect();
     await connect();
     const connections = await connectionsOf(server, 2);
-    first.writeMessage(exampleMessages.status);
+    first.sendMessage(exampleMessages.status);
 
     for (const connection of connections) {
       expect(connection.isReading).toBe(false);
-      expect(connection.socket.readableFlowing).toBe(false);
-      // No idle timer while paused: a broker outage must not disconnect devices (decision 4).
-      expect(connection.socket.timeout).toBe(0);
+      expect(connection.ws.isPaused).toBe(true);
     }
+    expect(publisher.requests).toHaveLength(0);
 
     publisher.setReady(true);
     for (const connection of connections) {
       expect(connection.isReading).toBe(true);
-      expect(connection.socket.timeout).toBe(BASE_CONFIG.INGEST_SOCKET_IDLE_MS);
+      expect(connection.ws.isPaused).toBe(false);
     }
     const [request] = await publisher.waitForRequests(1);
     expect(request?.message).toEqual(exampleMessages.status);
@@ -257,26 +241,25 @@ describe('IngestServer', () => {
     publisher.setReady(false);
     for (const connection of connections) {
       expect(connection.isReading).toBe(false);
-      expect(connection.socket.readableFlowing).toBe(false);
-      expect(connection.socket.timeout).toBe(0);
+      expect(connection.ws.isPaused).toBe(true);
     }
   });
 
-  it('pauses a socket when its own window fills and resumes it at half the cap', async () => {
+  it('pauses a connection when its own window fills and resumes it at half the cap', async () => {
     const { server, publisher, connect } = await startServer({
       config: { INGEST_MAX_UNCONFIRMED: 2 },
     });
     const device = await connect();
     const connection = await onlyConnection(server);
-    device.writeMessage(metrics(1));
+    device.sendMessage(metrics(1));
     await publisher.waitForRequests(1);
     expect(connection.isReading).toBe(true);
-    device.writeMessage(metrics(2));
+    device.sendMessage(metrics(2));
     await publisher.waitForRequests(2);
     expect(connection.isReading).toBe(false);
-    expect(connection.socket.readableFlowing).toBe(false);
+    expect(connection.ws.isPaused).toBe(true);
 
-    device.writeMessage(metrics(3));
+    device.sendMessage(metrics(3));
     expect(publisher.requests).toHaveLength(2);
     // A cap of 2 reopens at Math.floor(2 / 2) = 1, so one confirm is enough.
     publisher.confirm(0);
@@ -285,20 +268,18 @@ describe('IngestServer', () => {
     expect(requests.map((request) => request.message.seq)).toEqual([1, 2, 3]);
   });
 
-  it('publishes every frame of a chunk that fills its window, and pauses only after it', async () => {
+  it('publishes every message of one read that fills its window, and pauses only after it', async () => {
     const { server, publisher, connect } = await startServer({
       ready: false,
       config: { INGEST_MAX_UNCONFIRMED: 1 },
     });
     const device = await connect();
     const connection = await onlyConnection(server);
-    // Written while nothing reads the socket, so the first read after readiness takes all three
-    // frames as one chunk: the window closes on the first frame and the other two still go out.
-    await new Promise<void>((resolve) => {
-      const frames = [metrics(1), metrics(2), metrics(3)].map((message) => encodeFrame(message));
-      device.socket.write(Buffer.concat(frames), () => {
-        resolve();
-      });
+    // Sent while nothing reads the connection, so the first read after readiness takes all three
+    // messages as one chunk: the window closes on the first and the other two still go out.
+    for (const seq of [1, 2, 3]) device.sendMessage(metrics(seq));
+    await vi.waitFor(() => {
+      expect(device.ws.bufferedAmount).toBe(0);
     });
     publisher.setReady(true);
 
@@ -307,7 +288,7 @@ describe('IngestServer', () => {
     expect(connection.isReading).toBe(false);
   });
 
-  it('pauses every socket when the instance window fills, and resumes every socket when it reopens', async () => {
+  it('pauses every connection when the instance window fills, and resumes every connection when it reopens', async () => {
     const { server, publisher, connect } = await startServer({
       config: { INGEST_MAX_UNCONFIRMED_TOTAL: 2 },
     });
@@ -315,10 +296,10 @@ describe('IngestServer', () => {
     const b = await connect();
     const connections = await connectionsOf(server, 2);
     expect(connections[0]?.connectionId).not.toBe(connections[1]?.connectionId);
-    a.writeMessage(metrics(1));
+    a.sendMessage(metrics(1));
     await publisher.waitForRequests(1);
     expect(connections.map((connection) => connection.isReading)).toEqual([true, true]);
-    b.writeMessage(metrics(2));
+    b.sendMessage(metrics(2));
     await publisher.waitForRequests(2);
     expect(connections.map((connection) => connection.isReading)).toEqual([false, false]);
 
@@ -326,49 +307,85 @@ describe('IngestServer', () => {
     expect(connections.map((connection) => connection.isReading)).toEqual([true, true]);
   });
 
-  it('closes a silent reading socket after the idle timeout', async () => {
-    const { logs, connect } = await startServer({ config: { INGEST_SOCKET_IDLE_MS: 50 } });
-    const device = await connect();
+  it('closes a reading connection that does not answer pings, within two intervals', async () => {
+    const { logs, connect } = await startServer({ config: { INGEST_PING_INTERVAL_MS: 50 } });
+    const started = performance.now();
+    const device = await connect({ autoPong: false });
 
-    await device.closed;
+    // `terminate()` sends no close frame, so the device sees an abnormal closure.
+    expect((await device.closed).code).toBe(ABNORMAL_CLOSURE);
+    expect(performance.now() - started).toBeLessThan(500);
     await vi.waitFor(() => {
-      expect(linesWith(logs, 'connection closed')[0]?.reason).toBe('idle');
+      expect(linesWith(logs, 'connection closed')[0]?.reason).toBe('unresponsive');
     });
   });
 
-  it('never closes a paused socket for being idle', async () => {
-    const { server, connect } = await startServer({
-      config: { INGEST_SOCKET_IDLE_MS: 50 },
+  it('keeps a connection that answers pings', async () => {
+    const { server, connect } = await startServer({ config: { INGEST_PING_INTERVAL_MS: 50 } });
+    const device = await connect();
+    const connection = await onlyConnection(server);
+
+    await vi.waitFor(() => {
+      expect(device.pings()).toBeGreaterThanOrEqual(3);
+    });
+    expect(server.connections()).toEqual([connection]);
+    expect(device.ws.readyState).toBe(WebSocket.OPEN);
+  });
+
+  it('never pings a paused connection', async () => {
+    const { server, publisher, connect } = await startServer({
+      config: { INGEST_PING_INTERVAL_MS: 50 },
       ready: false,
     });
     const device = await connect();
     const connection = await onlyConnection(server);
 
-    // The one timed wait in this file: the assertion is that nothing happens. 200 ms is four idle
-    // timeouts.
-    await delay(200);
+    // One of the file's two bounded absence checks: the assertion is that nothing happens. 250 ms
+    // is five intervals.
+    await delay(250);
+    expect(device.pings()).toBe(0);
     expect(server.connections()).toEqual([connection]);
-    expect(device.socket.destroyed).toBe(false);
+
+    // Pings start with reading.
+    publisher.setReady(true);
+    await vi.waitFor(() => {
+      expect(device.pings()).toBeGreaterThanOrEqual(1);
+    });
   });
 
-  it('closes a connection with reason error when the device resets it, naming the device', async () => {
+  it('closes a connection with reason end and code 1006 when the device resets it, naming the device', async () => {
     const { server, publisher, logs, connect } = await startServer();
     const device = await connect();
     const connection = await onlyConnection(server);
-    device.writeMessage(exampleMessages.status);
+    device.sendMessage(exampleMessages.status);
     await publisher.waitForRequests(1);
 
     device.socket.resetAndDestroy();
 
     await connectionsOf(server, 0);
-    expect(linesWith(logs, 'connection error')).toEqual([
-      expect.objectContaining({
-        level: WARN,
-        connectionId: connection.connectionId,
-        lastDeviceId: 'dev-0001',
-      }),
-    ]);
-    expect(linesWith(logs, 'connection closed')[0]?.reason).toBe('error');
+    // `ws` swallows the socket error and reports a close with 1006; nothing is worth a warning.
+    expect(warnings(logs)).toEqual([]);
+    expect(linesWith(logs, 'connection closed')[0]).toMatchObject({
+      connectionId: connection.connectionId,
+      lastDeviceId: 'dev-0001',
+      reason: 'end',
+      closeCode: ABNORMAL_CLOSURE,
+    });
+  });
+
+  it("closes with reason end and the device's code when the device closes normally", async () => {
+    const { server, logs, connect } = await startServer();
+    const device = await connect();
+    await onlyConnection(server);
+
+    device.close(NORMAL_CLOSURE, 'device stopping');
+
+    await connectionsOf(server, 0);
+    expect(linesWith(logs, 'connection closed')[0]).toMatchObject({
+      reason: 'end',
+      closeCode: NORMAL_CLOSURE,
+    });
+    expect(warnings(logs)).toEqual([]);
   });
 
   it('frees the instance window when a message of a closed connection is confirmed', async () => {
@@ -378,20 +395,20 @@ describe('IngestServer', () => {
     const a = await connect();
     const b = await connect();
     await connectionsOf(server, 2);
-    a.writeMessage(metrics(1));
+    a.sendMessage(metrics(1));
     await publisher.waitForRequests(1);
-    a.destroy();
+    a.terminate();
     const [connectionB] = await connectionsOf(server, 1);
     expect(connectionB?.isReading).toBe(false);
 
     publisher.confirm(0);
     expect(connectionB?.isReading).toBe(true);
-    b.writeMessage(metrics(2));
+    b.sendMessage(metrics(2));
     const requests = await publisher.waitForRequests(2);
     expect(requests[1]?.message.seq).toBe(2);
   });
 
-  it('half-closes every connection on shutdown and finishes once the devices have closed', async () => {
+  it('sends close code 1001 to every device on shutdown and finishes once they have closed', async () => {
     const { server, logs, connect } = await startServer({ config: { SHUTDOWN_TIMEOUT_MS: 2_000 } });
     const first = await connect();
     const second = await connect();
@@ -400,69 +417,55 @@ describe('IngestServer', () => {
     const started = performance.now();
     expect(await server.shutdown()).toEqual({ openConnections: 0, unconfirmed: 0 });
     expect(performance.now() - started).toBeLessThan(1_000);
-    await Promise.all([first.ended, second.ended]);
-    expect(logs.filter((line) => line.level === WARN)).toEqual([]);
+    const closes = await Promise.all([first.closed, second.closed]);
+    expect(closes).toEqual([
+      { code: GOING_AWAY, reason: 'ingest shutting down' },
+      { code: GOING_AWAY, reason: 'ingest shutting down' },
+    ]);
+    expect(warnings(logs)).toEqual([]);
   });
 
-  it('keeps reading a half-closed connection during the drain', async () => {
-    const { server, publisher, connect } = await startServer({
-      config: { SHUTDOWN_TIMEOUT_MS: 2_000 },
-    });
-    const device = await connect({ allowHalfOpen: true });
-    await onlyConnection(server);
-
-    const drained = server.shutdown();
-    await device.ended;
-    // Written after the server's FIN: decision 19 half-closes so that a frame like this is still read.
-    device.writeMessage(exampleMessages.status);
-    const [request] = await publisher.waitForRequests(1);
-    expect(request?.message).toEqual(exampleMessages.status);
-    publisher.confirm(0);
-    device.end();
-
-    expect(await drained).toEqual({ openConnections: 0, unconfirmed: 0 });
-  });
-
-  it('reads what a paused socket holds when the publisher becomes ready during the drain', async () => {
+  it('publishes what a paused connection holds when the publisher becomes ready during the drain, then closes it', async () => {
     const { server, publisher, connect } = await startServer({
       ready: false,
       config: { SHUTDOWN_TIMEOUT_MS: 2_000 },
     });
     const device = await connect();
     await onlyConnection(server);
-    await new Promise<void>((resolve) => {
-      device.socket.write(encodeFrame(exampleMessages.status), () => {
-        resolve();
-      });
+    device.sendMessage(exampleMessages.status);
+    await vi.waitFor(() => {
+      expect(device.ws.bufferedAmount).toBe(0);
     });
 
     const drained = server.shutdown();
-    // The device got the FIN and closed its side; the paused socket has read nothing yet.
-    await device.ended;
+    // The close frame is written to the paused connection; nothing has been read yet.
     expect(publisher.requests).toHaveLength(0);
     // The broker comes back during the drain. Shutdown is not an input of the reading rule
-    // (decision 19), so the socket reads the frame, then the device's close.
+    // (decision 19), so the connection reads the message, then the device's close reply.
     publisher.setReady(true);
     const [request] = await publisher.waitForRequests(1);
     expect(request?.message).toEqual(exampleMessages.status);
     publisher.confirm(0);
 
     expect(await drained).toEqual({ openConnections: 0, unconfirmed: 0 });
+    expect(await device.closed).toEqual({ code: GOING_AWAY, reason: 'ingest shutting down' });
   });
 
   it('destroys the connections still open when the drain budget runs out, with one warn line', async () => {
     const { server, logs, connect } = await startServer({ config: { SHUTDOWN_TIMEOUT_MS: 100 } });
-    const device = await connect({ allowHalfOpen: true });
+    const device = await connect();
     await onlyConnection(server);
+    // A device that never reads the close frame, so it never replies and the handshake never ends.
+    device.socket.pause();
 
     expect(await server.shutdown()).toEqual({ openConnections: 1, unconfirmed: 0 });
-    // The device got the server's FIN and kept its own side open, so only the budget ended the wait.
-    // Its own `closed` is not awaited: destroying a half-closed socket with nothing unread sends no
-    // RST, so such a device learns of it only when it writes again.
-    await device.ended;
-    const warnings = logs.filter((line) => line.level === WARN);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatchObject({ openConnections: 1, unconfirmed: 0 });
+    expect(warnings(logs)).toEqual([
+      expect.objectContaining({
+        msg: 'shutdown drain ended at its budget',
+        openConnections: 1,
+        unconfirmed: 0,
+      }),
+    ]);
     await connectionsOf(server, 0);
     expect(linesWith(logs, 'connection closed')[0]?.reason).toBe('shutdown');
   });
@@ -475,7 +478,7 @@ describe('IngestServer', () => {
     expect(server.shutdown()).toBe(drained);
     expect(await drained).toEqual({ openConnections: 0, unconfirmed: 0 });
     expect(performance.now() - started).toBeLessThan(50);
-    expect(logs.filter((line) => line.level === WARN)).toEqual([]);
+    expect(warnings(logs)).toEqual([]);
   });
 
   it('finishes the drain on the confirm that empties the ledger, though no window reopens', async () => {
@@ -483,9 +486,9 @@ describe('IngestServer', () => {
       config: { INGEST_MAX_UNCONFIRMED: 256, SHUTDOWN_TIMEOUT_MS: 2_000 },
     });
     const device = await connect();
-    for (let seq = 1; seq <= 3; seq += 1) device.writeMessage(metrics(seq));
+    for (let seq = 1; seq <= 3; seq += 1) device.sendMessage(metrics(seq));
     await publisher.waitForRequests(3);
-    device.end();
+    device.close(NORMAL_CLOSURE);
     await connectionsOf(server, 0);
 
     const drained = server.shutdown();
@@ -497,22 +500,34 @@ describe('IngestServer', () => {
     expect(performance.now() - started).toBeLessThan(500);
   });
 
+  it('answers 404 to an upgrade on another path and to a plain HTTP request', async () => {
+    const { server, logs, port, connect } = await startServer();
+
+    await expect(connect({ path: '/other' })).rejects.toThrow('Unexpected server response: 404');
+    expect(linesWith(logs, 'upgrade rejected')).toEqual([
+      expect.objectContaining({ level: DEBUG, path: '/other' }),
+    ]);
+
+    const response = await fetch(`http://127.0.0.1:${String(port)}/telemetry`);
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({});
+    expect(server.connections()).toEqual([]);
+  });
+
   it('logs the accept and the close of a connection, and counts it while open and after it closed', async () => {
     const { server, publisher, logs, connect } = await startServer();
     const device = await connect();
     const connection = await onlyConnection(server);
-    device.writeMessage(exampleMessages.status);
-    device.write('not json\n');
-    const partial = '{"partial';
-    device.write(partial);
+    device.sendMessage(exampleMessages.status);
+    device.send('not json');
     await publisher.waitForRequests(1);
     await vi.waitFor(() => {
-      expect(connection.pendingBytes).toBe(partial.length);
+      expect(connection.rejected).toBe(1);
     });
     // Counted from the open connection now, and kept by the server after it has closed.
     expect(server.stats()).toEqual({ open: 1, reading: 1, received: 1, rejected: 1 });
     expect(connection.remote).toBe(`127.0.0.1:${String(device.socket.localPort)}`);
-    device.end();
+    device.close(NORMAL_CLOSURE);
 
     await connectionsOf(server, 0);
     expect(linesWith(logs, 'connection accepted')).toEqual([
@@ -529,9 +544,79 @@ describe('IngestServer', () => {
       lastDeviceId: 'dev-0001',
       received: 1,
       rejected: 1,
-      pendingBytes: partial.length,
+      closeCode: NORMAL_CLOSURE,
       reason: 'end',
     });
     expect(server.stats()).toEqual({ open: 0, reading: 0, received: 1, rejected: 1 });
+  });
+
+  it('never pings a closing connection, so a device that stops answering after the close frame is ended by the budget, not as unresponsive', async () => {
+    const { server, publisher, logs, connect } = await startServer({
+      config: { INGEST_PING_INTERVAL_MS: 50, SHUTDOWN_TIMEOUT_MS: 300 },
+      ready: false,
+    });
+    const device = await connect();
+    await onlyConnection(server);
+    // The device reads neither pings nor the close frame from here on.
+    device.socket.pause();
+
+    const started = performance.now();
+    const drained = server.shutdown();
+    // Reading starts, so pings would start too — but the connection is closing.
+    publisher.setReady(true);
+
+    expect(await drained).toEqual({ openConnections: 1, unconfirmed: 0 });
+    expect(performance.now() - started).toBeGreaterThanOrEqual(300);
+    await connectionsOf(server, 0);
+    expect(linesWith(logs, 'connection closed')[0]?.reason).toBe('shutdown');
+  });
+
+  it('never pings a connection it is closing itself, so a device that stops answering after a 1003 closes with reason binary', async () => {
+    const { server, logs, connect } = await startServer({
+      config: { INGEST_PING_INTERVAL_MS: 50 },
+    });
+    const device = await connect();
+    const connection = await onlyConnection(server);
+    // The device reads neither pings nor the close frame until it resumes.
+    device.socket.pause();
+    device.sendBinary(Buffer.from([1]));
+    await vi.waitFor(() => {
+      expect(linesWith(logs, 'binary message rejected')).toHaveLength(1);
+    });
+
+    // The other bounded absence check: five intervals in which nothing may happen.
+    await delay(250);
+    expect(server.connections()).toEqual([connection]);
+    expect(linesWith(logs, 'connection closed')).toEqual([]);
+    expect(device.pings()).toBe(0);
+
+    device.socket.resume();
+    expect((await device.closed).code).toBe(UNSUPPORTED_DATA);
+    await connectionsOf(server, 0);
+    expect(linesWith(logs, 'connection closed')[0]).toMatchObject({
+      reason: 'binary',
+      closeCode: UNSUPPORTED_DATA,
+    });
+  });
+
+  it('ends a connection that was already closing on its own at the budget, with its own reason', async () => {
+    const { server, logs, connect } = await startServer({ config: { SHUTDOWN_TIMEOUT_MS: 200 } });
+    const device = await connect();
+    await onlyConnection(server);
+    device.socket.pause();
+    device.sendBinary(Buffer.from([1]));
+    await vi.waitFor(() => {
+      expect(linesWith(logs, 'binary message rejected')).toHaveLength(1);
+    });
+
+    expect(await server.shutdown()).toEqual({ openConnections: 1, unconfirmed: 0 });
+    await connectionsOf(server, 0);
+    expect(linesWith(logs, 'connection closed')[0]).toMatchObject({
+      reason: 'binary',
+      closeCode: ABNORMAL_CLOSURE,
+    });
+    // Exactly one close frame reached the device: the 1003, never a second one for the shutdown.
+    device.socket.resume();
+    expect((await device.closed).code).toBe(UNSUPPORTED_DATA);
   });
 });

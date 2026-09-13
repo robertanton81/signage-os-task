@@ -10,11 +10,10 @@ const COUNTS = [
   'INGEST_MAX_UNCONFIRMED',
   'INGEST_MAX_UNCONFIRMED_TOTAL',
   'INGEST_PING_INTERVAL_MS',
-  'INGEST_SOCKET_IDLE_MS',
 ] as const;
 
 /** The variables that become a timer delay and are bounded by the limit Node timers accept. */
-const TIMERS = ['INGEST_PING_INTERVAL_MS', 'INGEST_SOCKET_IDLE_MS'] as const;
+const TIMERS = ['INGEST_PING_INTERVAL_MS'] as const;
 
 function problemsOf(fn: () => unknown): string[] {
   try {
@@ -46,7 +45,6 @@ describe('loadIngestConfig', () => {
       INGEST_MAX_UNCONFIRMED: 256,
       INGEST_MAX_UNCONFIRMED_TOTAL: 20_000,
       INGEST_PING_INTERVAL_MS: 30_000,
-      INGEST_SOCKET_IDLE_MS: 90_000,
     });
   });
 
@@ -128,6 +126,12 @@ describe('loadIngestConfig', () => {
     expect(loadIngestConfig({ ...required, INGEST_PING_INTERVAL_MS: '50' })).toMatchObject({
       INGEST_PING_INTERVAL_MS: 50,
     });
+  });
+
+  it('ignores the idle timeout of the earlier transport', () => {
+    expect(loadIngestConfig({ ...required, INGEST_SOCKET_IDLE_MS: '90000' })).not.toHaveProperty(
+      'INGEST_SOCKET_IDLE_MS',
+    );
   });
 
   it('names a missing RABBITMQ_URL', () => {

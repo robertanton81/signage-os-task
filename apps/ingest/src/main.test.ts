@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
+import { connectTestDevice, type TestDevice } from './test-device.js';
+
 const MAIN = fileURLToPath(new URL('./main.ts', import.meta.url));
 const SOURCE_HOOKS = fileURLToPath(new URL('./test-source-hooks.ts', import.meta.url));
 
@@ -36,7 +38,7 @@ type IngestProcess = {
 
 const children: ChildProcess[] = [];
 const servers: net.Server[] = [];
-const sockets: net.Socket[] = [];
+const devices: TestDevice[] = [];
 
 function startIngest(env: Record<string, string>): IngestProcess {
   // The real entry point, from its sources (see `test-source-hooks.ts`). A passed `env` replaces the
@@ -161,7 +163,7 @@ afterEach(async () => {
     if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }
   children.length = 0;
-  for (const socket of sockets.splice(0)) socket.destroy();
+  for (const device of devices.splice(0)) device.terminate();
   await Promise.all(
     servers
       .splice(0)
@@ -182,11 +184,10 @@ describe('ingest process', () => {
     expect.soft(response.status).toBe(503);
     expect.soft(await response.json()).toEqual({ status: 'not_ready', reason: 'connecting' });
 
-    // A device connected during the outage: its socket is never resumed, so it does not notice the
-    // device's close, and the drain ends at its budget (spec trade-off T28).
-    const device = net.connect({ host: '127.0.0.1', port: ingestPort });
-    sockets.push(device);
-    device.on('error', () => undefined);
+    // A device connected during the outage: its connection is never resumed, so ingest never reads
+    // the device's reply to the close frame, and the drain ends at its budget (spec trade-off T28).
+    const device = await connectTestDevice({ port: ingestPort });
+    devices.push(device);
     await ingest.waitForLog('connection accepted');
 
     const signalledAt = performance.now();
