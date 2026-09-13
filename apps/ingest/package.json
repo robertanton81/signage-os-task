@@ -13,9 +13,11 @@
   "dependencies": {
     "@telemetry/shared": "workspace:*",
     "amqplib": "catalog:",
+    "ws": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {
+    "@types/ws": "catalog:",
     "vitest": "catalog:"
   }
 }
