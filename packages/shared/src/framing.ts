@@ -1,7 +1,21 @@
 import type { TelemetryMessage } from './message.js';
 
-/** Upper bound of one frame in bytes, newline excluded. A valid message is a few hundred bytes. */
+/** The request path of the device WebSocket endpoint on ingest (WebSocket transport spec, decision 1). */
+export const TELEMETRY_SOCKET_PATH = '/telemetry';
+
+/**
+ * Upper bound of one message on the wire, in bytes: the server's `maxPayload`, and the AMQP body
+ * bound in processing. A valid message is a few hundred bytes.
+ */
 export const MAX_FRAME_BYTES = 64 * 1024;
+
+/**
+ * One compact JSON message per WebSocket text message (WebSocket transport spec, decision 2). No
+ * `space` argument: the text is one line and matches the AMQP body byte for byte.
+ */
+export function encodeMessage(message: TelemetryMessage): string {
+  return JSON.stringify(message);
+}
 
 const NEWLINE = 0x0a;
 
