@@ -112,6 +112,31 @@ describe('Ledger', () => {
 
     expect(new Set(ids).size).toBe(5);
   });
+
+  it('never reuses an id, so a new entry cannot overwrite a live one after a confirm', () => {
+    // Messages keep arriving while older ones are acked; a reused key would replace a live entry.
+    const ledger = new Ledger();
+    const first = ledger.add({ args, onConfirmed: noop });
+    const second = ledger.add({ args, onConfirmed: noop });
+    ledger.confirm(first);
+
+    const third = ledger.add({ args, onConfirmed: noop });
+
+    expect(third.id).not.toBe(first.id);
+    expect(third.id).not.toBe(second.id);
+    expect(idsOf(ledger.pending())).toEqual([second.id, third.id]);
+  });
+
+  it('ignores markSent for an entry that is no longer in the ledger', () => {
+    const ledger = new Ledger();
+    const entry = ledger.add({ args, onConfirmed: noop });
+    ledger.confirm(entry);
+
+    ledger.markSent(entry, 1);
+
+    expect(ledger.size).toBe(0);
+    expect(ledger.sentCount).toBe(0);
+  });
 });
 
 describe('StallClock', () => {
@@ -119,27 +144,27 @@ describe('StallClock', () => {
 
   it('starts when the sent count rises from zero and ignores later sends', () => {
     const clock = new StallClock();
-    expect(clock.isStalled(1_000_000, TIMEOUT_MS)).toBe(false);
+    expect(clock.isStalled({ now: 1_000_000, timeoutMs: TIMEOUT_MS })).toBe(false);
 
-    clock.onSent(1_000, 1);
-    clock.onSent(5_000, 2);
+    clock.onSent({ now: 1_000, sentCount: 1 });
+    clock.onSent({ now: 5_000, sentCount: 2 });
 
     // Measured from 1 000, the first send. A restart at 5 000 would still be waiting at 31 001.
-    expect(clock.isStalled(31_000, TIMEOUT_MS)).toBe(false);
-    expect(clock.isStalled(31_001, TIMEOUT_MS)).toBe(true);
+    expect(clock.isStalled({ now: 31_000, timeoutMs: TIMEOUT_MS })).toBe(false);
+    expect(clock.isStalled({ now: 31_001, timeoutMs: TIMEOUT_MS })).toBe(true);
   });
 
   it('restarts on an ack while entries remain sent and stops once none are', () => {
     const clock = new StallClock();
-    clock.onSent(0, 1);
-    clock.onSent(0, 2);
+    clock.onSent({ now: 0, sentCount: 1 });
+    clock.onSent({ now: 0, sentCount: 2 });
 
-    clock.onAck(40_000, 1);
-    expect(clock.isStalled(70_000, TIMEOUT_MS)).toBe(false);
-    expect(clock.isStalled(70_001, TIMEOUT_MS)).toBe(true);
+    clock.onAck({ now: 40_000, sentCount: 1 });
+    expect(clock.isStalled({ now: 70_000, timeoutMs: TIMEOUT_MS })).toBe(false);
+    expect(clock.isStalled({ now: 70_001, timeoutMs: TIMEOUT_MS })).toBe(true);
 
-    clock.onAck(50_000, 0);
-    expect(clock.isStalled(1_000_000, TIMEOUT_MS)).toBe(false);
+    clock.onAck({ now: 50_000, sentCount: 0 });
+    expect(clock.isStalled({ now: 1_000_000, timeoutMs: TIMEOUT_MS })).toBe(false);
   });
 
   it('restarts on entering ready or unblocked, whatever the sent count', () => {
@@ -147,8 +172,8 @@ describe('StallClock', () => {
     const clock = new StallClock();
     clock.restart(2_000);
 
-    expect(clock.isStalled(32_000, TIMEOUT_MS)).toBe(false);
-    expect(clock.isStalled(32_001, TIMEOUT_MS)).toBe(true);
+    expect(clock.isStalled({ now: 32_000, timeoutMs: TIMEOUT_MS })).toBe(false);
+    expect(clock.isStalled({ now: 32_001, timeoutMs: TIMEOUT_MS })).toBe(true);
   });
 
   it('measures from the first send, not from an earlier restart', () => {
@@ -156,9 +181,19 @@ describe('StallClock', () => {
     // on its first message.
     const clock = new StallClock();
     clock.restart(0);
-    clock.onSent(60_000, 1);
+    clock.onSent({ now: 60_000, sentCount: 1 });
 
-    expect(clock.isStalled(60_001, TIMEOUT_MS)).toBe(false);
-    expect(clock.isStalled(90_001, TIMEOUT_MS)).toBe(true);
+    expect(clock.isStalled({ now: 60_001, timeoutMs: TIMEOUT_MS })).toBe(false);
+    expect(clock.isStalled({ now: 90_001, timeoutMs: TIMEOUT_MS })).toBe(true);
+  });
+
+  it('moves the start forward when restart runs while the clock is already counting', () => {
+    const clock = new StallClock();
+    clock.onSent({ now: 0, sentCount: 1 });
+
+    clock.restart(20_000);
+
+    expect(clock.isStalled({ now: 50_000, timeoutMs: TIMEOUT_MS })).toBe(false);
+    expect(clock.isStalled({ now: 50_001, timeoutMs: TIMEOUT_MS })).toBe(true);
   });
 });

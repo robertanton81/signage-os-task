@@ -6,6 +6,8 @@ export type LedgerEntry = {
   readonly args: PublishArgs;
   /** Runs once, when the broker acks the message. */
   readonly onConfirmed: () => void;
+  // `state` and `wasSent` are written only by the Ledger's own methods: `sentCount` stays right
+  // only while no caller assigns them.
   state: { name: 'pending' } | { name: 'sent'; generation: number };
   /** Set by markSent and never cleared: a pending entry with `wasSent` true is a re-publish. */
   wasSent: boolean;
@@ -88,29 +90,30 @@ export class Ledger {
  * a timer per message: the wait starts when the sent count rises from zero, restarts on every ack
  * while entries remain sent, restarts on entering ready and on unblocked, and stops once nothing is
  * sent. The clock does not know the sent count between calls; the publisher checks it before it
- * acts on a stall.
+ * acts on a stall. A method that takes two numbers takes them as one named object, so a swapped
+ * call cannot pass the type checker (CLAUDE.md, "Arguments and validation boundaries").
  */
 export class StallClock {
   #startedAt: number | null = null;
 
   /** Called after an entry was marked sent, with the new sent count. */
-  onSent(now: number, sentCount: number): void {
+  onSent({ now, sentCount }: { now: number; sentCount: number }): void {
     if (sentCount === 1) {
       this.#startedAt = now;
     }
   }
 
   /** Called after an ack, with the sent count that remains. */
-  onAck(now: number, sentCount: number): void {
+  onAck({ now, sentCount }: { now: number; sentCount: number }): void {
     this.#startedAt = sentCount > 0 ? now : null;
   }
 
-  /** Called on entering ready and on unblocked. */
+  /** Called on entering ready and on unblocked, also while the clock is already counting. */
   restart(now: number): void {
     this.#startedAt = now;
   }
 
-  isStalled(now: number, timeoutMs: number): boolean {
+  isStalled({ now, timeoutMs }: { now: number; timeoutMs: number }): boolean {
     return this.#startedAt !== null && now - this.#startedAt > timeoutMs;
   }
 }
