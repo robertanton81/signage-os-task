@@ -125,9 +125,49 @@ describe('DeviceClient', () => {
     expect(statuses).toBeGreaterThanOrEqual(5);
   });
 
-  it('sends no heartbeat while ticks keep re-arming the timer', async () => {
-    // Six heartbeat periods fit inside the observation window, so a plain periodic timer would
-    // produce about six extra status messages. Exactly one status means the re-arm works.
+  it('replaces a lost status during continuous metrics traffic, without a state transition', async () => {
+    // Device-to-ingest loss is accepted by design (consistency spec, decision 12), and the device
+    // cannot see it: there is no acknowledgement. So a status dropped at the receiver is, from the
+    // device's side, the same event as an outbox eviction or a frame written into a broken
+    // connection. The replacement must still come while the device keeps sending healthy metrics
+    // on every tick — the profile in which the first heartbeat rule never fired.
+    const target = await sink();
+    const device = client(
+      configFor(target.port, { EMULATOR_EVENT_INTERVAL_MS: '20', EMULATOR_HEARTBEAT_MS: '200' }),
+      5,
+    );
+    device.start();
+
+    const { lost, replacement, between } = await vi.waitFor(
+      () => {
+        const messages = parse(target.lines());
+        const [first, second] = messages.filter((m) => m.type === 'status');
+        if (first === undefined || second === undefined) throw new Error('no replacement yet');
+        return {
+          lost: first,
+          replacement: second,
+          between: messages.filter((m) => m.seq > first.seq && m.seq < second.seq),
+        };
+      },
+      { timeout: 4_000 },
+    );
+
+    // The session-start status is the one treated as lost.
+    expect(lost).toMatchObject({ seq: 1, payload: { state: 'online' } });
+    // The replacement carries the same state: a refresh, not a transition.
+    expect(replacement.payload).toEqual({ state: 'online' });
+    // It arrived while metrics kept flowing, and none of them crossed a degraded threshold.
+    const readings = between.filter((m) => m.type === 'metrics');
+    expect(readings.length).toBeGreaterThanOrEqual(5);
+    expect(readings.every((m) => m.payload.cpuPercent <= 90 && m.payload.temperatureC <= 75)).toBe(
+      true,
+    );
+    // Its own timeout: the 4 s wait above would leave little of vitest's default 5 s.
+  }, 10_000);
+
+  it('sends one status per heartbeat interval while ticks keep flowing, never more', async () => {
+    // Other traffic must not suppress the refresh, and nothing may multiply it: a timer armed
+    // again without clearing the previous one would put several statuses into one interval.
     const target = await sink();
     const device = client(
       configFor(target.port, { EMULATOR_EVENT_INTERVAL_MS: '20', EMULATOR_HEARTBEAT_MS: '100' }),
@@ -135,18 +175,24 @@ describe('DeviceClient', () => {
     );
     device.start();
 
-    const messages = parse(await target.waitForLines(25));
-    const statuses = messages.filter((m) => m.type === 'status');
-    expect(statuses).toHaveLength(1);
-    expect(statuses[0]?.payload).toEqual({ state: 'online' });
-    // ...and the device really did stay healthy, so "one status" cannot mean "no state change
-    // happened to report" for the wrong reason.
-    const metrics = messages.filter((m) => m.type === 'metrics');
-    expect(metrics.length).toBeGreaterThan(10);
-    expect(metrics.every((m) => m.payload.cpuPercent <= 90 && m.payload.temperatureC <= 75)).toBe(
-      true,
+    const statuses = await vi.waitFor(
+      () => {
+        const found = parse(target.lines()).filter((m) => m.type === 'status');
+        if (found.length < 5) throw new Error(`only ${String(found.length)} statuses so far`);
+        return found;
+      },
+      { timeout: 4_000 },
     );
-  });
+
+    // No transition happened, so every gap below is the refresh timer's own.
+    expect(statuses.every((status) => status.payload.state === 'online')).toBe(true);
+    const times = statuses.map((status) => status.occurredAt);
+    // `?? time` turns a missing neighbour into a zero gap, which fails the check instead of hiding.
+    const gaps = times.slice(1).map((time, index) => time - (times[index] ?? time));
+    // A timer never fires early by more than the event loop's clock granularity, so a gap far
+    // under the interval can only come from a second timer.
+    expect(Math.min(...gaps)).toBeGreaterThanOrEqual(80);
+  }, 10_000);
 
   it('keeps generating while disconnected and delivers the backlog after reconnecting', async () => {
     const target = await sink();
@@ -174,11 +220,12 @@ describe('DeviceClient', () => {
   });
 
   it('queues nothing after the farewell, however long the drain takes', async () => {
-    // The regression test for the stopped flag. `prepareShutdown` enqueues, and every enqueue
-    // re-arms the heartbeat timer — so without the guard a slow drain gives that timer time to
-    // fire and put a `status` on the wire after the `offline` farewell. The fleet-level test
-    // cannot catch this: there the drain finishes in under a millisecond, so the timer never
-    // gets the chance. Here the wait is explicit and covers several heartbeat periods.
+    // The regression test for the stopped flag. `prepareShutdown` enqueues the farewell, which is
+    // a status, and every status re-arms the heartbeat timer — so without the guard a slow drain
+    // gives that timer time to fire and put a `status` on the wire after the `offline` farewell.
+    // The fleet-level test cannot catch this: there the drain finishes in under a millisecond, so
+    // the timer never gets the chance. Here the wait is explicit and covers several heartbeat
+    // periods.
     const target = await sink();
     const device = client(configFor(target.port, { EMULATOR_HEARTBEAT_MS: '20' }));
     device.start();

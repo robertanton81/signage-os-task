@@ -192,13 +192,19 @@ export class DeviceClient {
         );
       }
     }
-    if (messages.length > 0) this.#armHeartbeat();
+    if (messages.some((message) => message.type === 'status')) this.#armHeartbeat();
   }
 
   /**
-   * Re-armed on every enqueue, so the heartbeat fires only after a genuine idle gap. The
-   * `#stopped` guard is what keeps `prepareShutdown`'s push from resurrecting a timer the drain
-   * has already cleared — which would otherwise put a `status` on the wire after the farewell.
+   * The status refresh (design spec, decision 26): re-armed whenever a `status` is enqueued — the
+   * session start, a transition, the heartbeat itself — and by nothing else. A device therefore
+   * sends a `status` at least once per EMULATOR_HEARTBEAT_MS however busy it is, which is what
+   * replaces a `status` lost between device and ingest; metrics and counters replace themselves on
+   * the next tick. One exception widens that bound by one tick: `out-of-order` chaos can hold the
+   * heartbeat's own `status`, and the timer re-arms only when the next tick releases it. The
+   * `#stopped` guard keeps `prepareShutdown`'s farewell, itself a `status`, from
+   * resurrecting a timer the drain has already cleared — which would put a `status` on the wire
+   * after the farewell.
    */
   #armHeartbeat(): void {
     if (this.#stopped) return;

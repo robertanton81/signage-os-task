@@ -130,8 +130,9 @@ export class DeviceSession {
 
   /**
    * One `status` carrying the current state, regardless of whether anything changed. Called only
-   * by the client's idle timer, so an otherwise silent connection still carries traffic
-   * (design spec, decision 26).
+   * by the client's status refresh timer, which fires when no `status` was enqueued for
+   * EMULATOR_HEARTBEAT_MS: it replaces a lost `status` and keeps an idle connection carrying
+   * traffic (design spec, decision 26).
    */
   heartbeat(): TelemetryMessage[] {
     return [this.#status(this.#state)];
