@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'/Users/robertanton/Projects/Rob/signage-os-task/.codex/hooks/session-orient.sh'",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
