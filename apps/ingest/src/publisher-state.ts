@@ -71,6 +71,23 @@ export function isReady(state: PublisherState): boolean {
 }
 
 /**
+ * Decision 15's guard: a confirm stall recycles only a `ready` connection that is not blocked and has
+ * sent entries still waiting for their ack. A blocked connection's wait is suspended, and the stall
+ * clock itself does not know the sent count, so the guard checks both.
+ */
+export function isConfirmStall({
+  state,
+  sentCount,
+  stalled,
+}: {
+  state: PublisherState;
+  sentCount: number;
+  stalled: boolean;
+}): boolean {
+  return state.name === 'ready' && !state.blocked && sentCount > 0 && stalled;
+}
+
+/**
  * The next state and the effects the shell must run, in order. Pure. An event of another
  * generation, and a current-generation pair of state and event that has no row in the spec's
  * table, return the same state and no effects. Nothing changes a stopped publisher.

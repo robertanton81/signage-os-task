@@ -1,7 +1,7 @@
 import { decodeTelemetryMessage, type TelemetryMessageOf } from '@telemetry/shared';
 import { describe, expect, it } from 'vitest';
 
-import { toPublishArgs } from './amqp-message.js';
+import { parseMessageId, toPublishArgs } from './amqp-message.js';
 import { exampleMessages } from './fixtures.js';
 
 const RECEIVED_AT = 1_757_800_000_123;
@@ -74,5 +74,36 @@ describe('toPublishArgs', () => {
     expect(toPublishArgs(exampleMessages.metrics, LATE_IN_THE_SECOND).options.headers).toEqual({
       'x-received-at': 1_757_800_000_999,
     });
+  });
+});
+
+describe('parseMessageId', () => {
+  it.each(Object.values(exampleMessages))(
+    'reads back the identity toPublishArgs wrote for the $type message',
+    (message) => {
+      const { messageId } = toPublishArgs(message, RECEIVED_AT).options;
+      expect(parseMessageId(messageId)).toEqual({
+        deviceId: message.deviceId,
+        sessionId: message.sessionId,
+        seq: message.seq,
+      });
+    },
+  );
+
+  it.each([
+    { name: 'a number', messageId: 42 },
+    { name: 'no message id', messageId: undefined },
+    { name: 'two parts', messageId: 'dev-1:2' },
+    { name: 'four parts', messageId: 'dev-1:2:5:6' },
+    { name: 'an empty device id', messageId: ':2:5' },
+    { name: 'an empty session id', messageId: 'dev-1::5' },
+    { name: 'an empty seq', messageId: 'dev-1:2:' },
+    { name: 'a session id that is not a number', messageId: 'dev-1:x:5' },
+    { name: 'a seq with a fraction', messageId: 'dev-1:2:5.5' },
+    { name: 'a hexadecimal session id', messageId: 'dev-1:0x10:5' },
+    { name: 'a seq with a leading space', messageId: 'dev-1:2: 5' },
+    { name: 'a session id past the safe integer range', messageId: 'dev-1:9007199254740993:5' },
+  ])('gives undefined for $name', ({ messageId }) => {
+    expect(parseMessageId(messageId)).toBeUndefined();
   });
 });

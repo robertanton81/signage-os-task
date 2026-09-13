@@ -4,6 +4,7 @@ import {
   TELEMETRY_EXCHANGE,
   TELEMETRY_ROUTING_KEY,
   messageIdentity,
+  type MessageIdentity,
   type TelemetryMessage,
 } from '@telemetry/shared';
 import type { Options } from 'amqplib';
@@ -44,4 +45,31 @@ export function toPublishArgs(message: TelemetryMessage, receivedAt: number): Pu
       headers: { [RECEIVED_AT_HEADER]: receivedAt },
     },
   };
+}
+
+const DIGITS = /^\d+$/;
+
+/**
+ * The identity inside a message id that `toPublishArgs` wrote: `deviceId:sessionId:seq` (shared
+ * `messageIdentity`; a device id cannot contain a colon). A returned message's id comes back from the
+ * broker, so it is checked, not trusted: any other shape gives `undefined`.
+ */
+export function parseMessageId(messageId: unknown): MessageIdentity | undefined {
+  if (typeof messageId !== 'string') {
+    return undefined;
+  }
+  const parts = messageId.split(':');
+  if (parts.length !== 3) {
+    return undefined;
+  }
+  const [deviceId = '', sessionText = '', seqText = ''] = parts;
+  if (deviceId === '' || !DIGITS.test(sessionText) || !DIGITS.test(seqText)) {
+    return undefined;
+  }
+  const sessionId = Number(sessionText);
+  const seq = Number(seqText);
+  if (!Number.isSafeInteger(sessionId) || !Number.isSafeInteger(seq)) {
+    return undefined;
+  }
+  return { deviceId, sessionId, seq };
 }

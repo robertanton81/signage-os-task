@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   BACKOFF_RESET_AFTER_MS,
   INITIAL_STATE,
+  isConfirmStall,
   isReady,
   transition,
   type Effect,
@@ -625,4 +626,17 @@ describe('isReady', () => {
   ])('is $expected for $key', ({ state, expected }) => {
     expect(isReady(state)).toBe(expected);
   });
+});
+
+describe('isConfirmStall', () => {
+  it.each(VARIANTS)(
+    '$key recycles only when ready, unblocked, with sent entries and a stalled clock',
+    ({ key, state }) => {
+      const answers = [false, true].flatMap((stalled) =>
+        [0, 1].map((sentCount) => isConfirmStall({ state, sentCount, stalled })),
+      );
+      // Not stalled with 0 and 1 sent, then stalled with 0 and 1 sent.
+      expect(answers).toEqual([false, false, false, key === 'ready']);
+    },
+  );
 });

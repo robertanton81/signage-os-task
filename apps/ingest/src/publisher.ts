@@ -16,16 +16,16 @@ import {
   backoffDelay,
   messageLogger,
   type Logger,
-  type MessageIdentity,
   type TelemetryMessage,
 } from '@telemetry/shared';
 import { connect, type ChannelModel, type ConfirmChannel, type Message } from 'amqplib';
 
-import { toPublishArgs } from './amqp-message.js';
+import { parseMessageId, toPublishArgs } from './amqp-message.js';
 import { Ledger, StallClock, type LedgerEntry } from './ledger.js';
 import {
   BACKOFF_RESET_AFTER_MS,
   INITIAL_STATE,
+  isConfirmStall,
   isReady,
   transition,
   type Effect,
@@ -563,13 +563,14 @@ export class AmqpPublisher implements PublishPort {
     }
   }
 
-  /** Decision 15: recycle when sent entries have waited longer than the confirm timeout for an ack. */
+  /** Decision 15, on an interval of a third of the confirm timeout; the guard is `isConfirmStall`. */
   #checkStall(): void {
     const state = this.#state;
-    if (state.name !== 'ready' || state.blocked || this.#ledger.sentCount === 0) {
-      return;
-    }
-    if (this.#stallClock.isStalled({ now: Date.now(), timeoutMs: this.#confirmTimeoutMs })) {
+    const stalled = this.#stallClock.isStalled({
+      now: Date.now(),
+      timeoutMs: this.#confirmTimeoutMs,
+    });
+    if (isConfirmStall({ state, sentCount: this.#ledger.sentCount, stalled })) {
       this.#trigger({ generation: state.generation, reason: 'confirm_stall' });
     }
   }
@@ -667,34 +668,6 @@ export class AmqpPublisher implements PublishPort {
     const identity = parseMessageId(entry.args.options.messageId);
     return identity === undefined ? this.#logger : messageLogger(this.#logger, identity);
   }
-}
-
-/**
- * The identity inside a message id this service wrote: `deviceId:sessionId:seq` (shared
- * `messageIdentity`; a device id cannot contain a colon). A returned message's id comes back from
- * the broker, so it is checked, not trusted.
- */
-function parseMessageId(messageId: unknown): MessageIdentity | undefined {
-  if (typeof messageId !== 'string') {
-    return undefined;
-  }
-  const parts = messageId.split(':');
-  if (parts.length !== 3) {
-    return undefined;
-  }
-  const [deviceId = '', sessionText = '', seqText = ''] = parts;
-  const sessionId = Number(sessionText);
-  const seq = Number(seqText);
-  if (
-    deviceId === '' ||
-    sessionText === '' ||
-    seqText === '' ||
-    !Number.isSafeInteger(sessionId) ||
-    !Number.isSafeInteger(seq)
-  ) {
-    return undefined;
-  }
-  return { deviceId, sessionId, seq };
 }
 
 function nextTurn(): Promise<void> {
