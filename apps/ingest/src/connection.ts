@@ -79,7 +79,12 @@ export class DeviceConnection {
     this.socket.on('error', (error) => {
       this.#closeReason ??= 'error';
       options.logger.warn(
-        { err: error, connectionId: this.connectionId, remote: this.remote },
+        {
+          err: error,
+          connectionId: this.connectionId,
+          remote: this.remote,
+          lastDeviceId: this.#lastDeviceId,
+        },
         'connection error',
       );
     });

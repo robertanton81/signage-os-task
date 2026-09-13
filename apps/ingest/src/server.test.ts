@@ -259,6 +259,28 @@ describe('IngestServer', () => {
     expect(requests.map((request) => request.message.seq)).toEqual([1, 2, 3]);
   });
 
+  it('publishes every frame of a chunk that fills its window, and pauses only after it', async () => {
+    const { server, publisher, connect } = await startServer({
+      ready: false,
+      config: { INGEST_MAX_UNCONFIRMED: 1 },
+    });
+    const device = await connect();
+    const connection = await onlyConnection(server);
+    // Written while nothing reads the socket, so the first read after readiness takes all three
+    // frames as one chunk: the window closes on the first frame and the other two still go out.
+    await new Promise<void>((resolve) => {
+      const frames = [metrics(1), metrics(2), metrics(3)].map((message) => encodeFrame(message));
+      device.socket.write(Buffer.concat(frames), () => {
+        resolve();
+      });
+    });
+    publisher.setReady(true);
+
+    const requests = await publisher.waitForRequests(3);
+    expect(requests.map((request) => request.message.seq)).toEqual([1, 2, 3]);
+    expect(connection.isReading).toBe(false);
+  });
+
   it('pauses every socket when the instance window fills, and resumes every socket when it reopens', async () => {
     const { server, publisher, connect } = await startServer({
       config: { INGEST_MAX_UNCONFIRMED_TOTAL: 2 },
@@ -266,6 +288,7 @@ describe('IngestServer', () => {
     const a = await connect();
     const b = await connect();
     const connections = await connectionsOf(server, 2);
+    expect(connections[0]?.connectionId).not.toBe(connections[1]?.connectionId);
     a.writeMessage(metrics(1));
     await publisher.waitForRequests(1);
     expect(connections.map((connection) => connection.isReading)).toEqual([true, true]);
@@ -300,6 +323,26 @@ describe('IngestServer', () => {
     await delay(200);
     expect(server.connections()).toEqual([connection]);
     expect(device.socket.destroyed).toBe(false);
+  });
+
+  it('closes a connection with reason error when the device resets it, naming the device', async () => {
+    const { server, publisher, logs, connect } = await startServer();
+    const device = await connect();
+    const connection = await onlyConnection(server);
+    device.writeMessage(exampleMessages.status);
+    await publisher.waitForRequests(1);
+
+    device.socket.resetAndDestroy();
+
+    await connectionsOf(server, 0);
+    expect(linesWith(logs, 'connection error')).toEqual([
+      expect.objectContaining({
+        level: WARN,
+        connectionId: connection.connectionId,
+        lastDeviceId: 'dev-0001',
+      }),
+    ]);
+    expect(linesWith(logs, 'connection closed')[0]?.reason).toBe('error');
   });
 
   it('frees the instance window when a message of a closed connection is confirmed', async () => {
@@ -354,6 +397,33 @@ describe('IngestServer', () => {
     expect(await drained).toEqual({ openConnections: 0, unconfirmed: 0 });
   });
 
+  it('reads what a paused socket holds when the publisher becomes ready during the drain', async () => {
+    const { server, publisher, connect } = await startServer({
+      ready: false,
+      config: { SHUTDOWN_TIMEOUT_MS: 2_000 },
+    });
+    const device = await connect();
+    await onlyConnection(server);
+    await new Promise<void>((resolve) => {
+      device.socket.write(encodeFrame(exampleMessages.status), () => {
+        resolve();
+      });
+    });
+
+    const drained = server.shutdown();
+    // The device got the FIN and closed its side; the paused socket has read nothing yet.
+    await device.ended;
+    expect(publisher.requests).toHaveLength(0);
+    // The broker comes back during the drain. Shutdown is not an input of the reading rule
+    // (decision 19), so the socket reads the frame, then the device's close.
+    publisher.setReady(true);
+    const [request] = await publisher.waitForRequests(1);
+    expect(request?.message).toEqual(exampleMessages.status);
+    publisher.confirm(0);
+
+    expect(await drained).toEqual({ openConnections: 0, unconfirmed: 0 });
+  });
+
   it('destroys the connections still open when the drain budget runs out, with one warn line', async () => {
     const { server, logs, connect } = await startServer({ config: { SHUTDOWN_TIMEOUT_MS: 100 } });
     const device = await connect({ allowHalfOpen: true });
@@ -401,7 +471,7 @@ describe('IngestServer', () => {
     expect(performance.now() - started).toBeLessThan(500);
   });
 
-  it('logs the accept and the close of a connection, and keeps its counts after it closed', async () => {
+  it('logs the accept and the close of a connection, and counts it while open and after it closed', async () => {
     const { server, publisher, logs, connect } = await startServer();
     const device = await connect();
     const connection = await onlyConnection(server);
@@ -413,6 +483,9 @@ describe('IngestServer', () => {
     await vi.waitFor(() => {
       expect(connection.pendingBytes).toBe(partial.length);
     });
+    // Counted from the open connection now, and kept by the server after it has closed.
+    expect(server.stats()).toEqual({ open: 1, reading: 1, received: 1, rejected: 1 });
+    expect(connection.remote).toBe(`127.0.0.1:${String(device.socket.localPort)}`);
     device.end();
 
     await connectionsOf(server, 0);
