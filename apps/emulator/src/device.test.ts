@@ -7,7 +7,9 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { loadEmulatorConfig, type EmulatorConfig } from './config.js';
-import { DeviceClient } from './device.js';
+import { DeviceConnection } from './connection.js';
+import { DeviceClient, pumpOutbox } from './device.js';
+import { Outbox } from './outbox.js';
 import { createRandom } from './random.js';
 import { startTestSink, type TestSink } from './test-sink.js';
 
@@ -52,7 +54,11 @@ function parse(lines: readonly string[]): TelemetryMessage[] {
   });
 }
 
-const open: { sinks: TestSink[]; clients: DeviceClient[] } = { sinks: [], clients: [] };
+const open: { sinks: TestSink[]; clients: DeviceClient[]; connections: DeviceConnection[] } = {
+  sinks: [],
+  clients: [],
+  connections: [],
+};
 
 async function sink(): Promise<TestSink> {
   const created = await startTestSink();
@@ -73,8 +79,10 @@ function client(config: EmulatorConfig, seed = 5): DeviceClient {
 
 afterEach(async () => {
   await Promise.all(open.clients.map((created) => created.stop()));
+  await Promise.all(open.connections.map((created) => created.stop()));
   await Promise.all(open.sinks.map((created) => created.close()));
   open.clients.length = 0;
+  open.connections.length = 0;
   open.sinks.length = 0;
 });
 
@@ -314,4 +322,91 @@ describe('DeviceClient', () => {
     expect(device.stats.written).toBeGreaterThanOrEqual(10);
     expect(device.stats.dropped).toBe(0);
   });
+});
+
+/** Messages queued per round while the test fills the socket; the cap only stops a runaway. */
+const BATCH = 1_000;
+const MAX_QUEUED = 200_000;
+
+function metricsMessage(seq: number): TelemetryMessage {
+  return {
+    v: 1,
+    deviceId: 'dev-0001',
+    sessionId: 1_700_000_000_000,
+    seq,
+    occurredAt: 1_700_000_000_000,
+    type: 'metrics',
+    payload: { temperatureC: 40, cpuPercent: 10, ramPercent: 50 },
+  };
+}
+
+function isWritable(connection: DeviceConnection): boolean {
+  const state = connection.state;
+  return state.name === 'connected' && state.writable;
+}
+
+describe('pumpOutbox', () => {
+  it('writes every queued message exactly once and in order across backpressure', async () => {
+    // A real socket, because backpressure is the scenario. `socket.write()` returns false for a
+    // frame it has already queued; the first pump read that as a refusal, kept the frame at the
+    // head of the outbox and wrote it again after 'drain' — one duplicate identity on the wire
+    // per backpressure stop, with chaos off.
+    const target = await sink();
+    // A connection accepted while the sink is paused starts paused, so nothing drains yet.
+    target.pauseConnections();
+    const outbox = new Outbox(MAX_QUEUED + BATCH);
+    let written = 0;
+    const connection = new DeviceConnection({
+      deviceId: 'dev-0001',
+      hosts: [{ host: '127.0.0.1', port: target.port }],
+      random: createRandom(3),
+      logger: silentLogger(),
+      onWritable: () => {
+        written += pumpOutbox(outbox, connection).length;
+      },
+    });
+    open.connections.push(connection);
+    connection.start();
+    await vi.waitFor(() => {
+      expect(connection.isConnected).toBe(true);
+    });
+
+    // Queue and pump until the socket pushes back. How many bytes that takes is up to the kernel
+    // — about 620 KiB on macOS loopback — so the loop watches for backpressure, not a count.
+    let queued = 0;
+    const enqueue = () => {
+      for (let i = 0; i < BATCH; i += 1) {
+        queued += 1;
+        outbox.push(metricsMessage(queued));
+      }
+    };
+    while (isWritable(connection) && queued < MAX_QUEUED) {
+      enqueue();
+      written += pumpOutbox(outbox, connection).length;
+    }
+    expect(isWritable(connection)).toBe(false);
+    // A backlog behind the stop, so the drain after the resume runs the pump again.
+    enqueue();
+
+    target.resumeConnections();
+    await vi.waitFor(
+      () => {
+        expect(outbox.length).toBe(0);
+        expect(isWritable(connection)).toBe(true);
+      },
+      { timeout: 10_000 },
+    );
+    // Wait for the observable outcome — the sink holds at least every queued line — rather than
+    // trust `stop()`: its graceful close races a one-second destroy that a slow machine could lose
+    // while the sink still reads. `stop()` then waits for the sink's FIN, which the sink sends only
+    // after reading everything, so a frame written twice would be in `lines()` as well.
+    await target.waitForLines(queued);
+    await connection.stop();
+
+    const seqs = target.lines().map((line) => (JSON.parse(line) as TelemetryMessage).seq);
+    expect(seqs).toEqual(Array.from({ length: queued }, (_unused, index) => index + 1));
+    // The count the pump reports — what `DeviceClient` adds to `stats.written` — matches the
+    // frames on the wire. Before the fix the two differed: each stop added a frame, not a count.
+    expect(written).toBe(seqs.length);
+  }, 20_000);
 });

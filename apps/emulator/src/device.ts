@@ -8,7 +8,7 @@ import {
 import { ChaosPolicy, type ConnectionChaosMode } from './chaos.js';
 import type { EmulatorConfig } from './config.js';
 import { DeviceConnection } from './connection.js';
-import { Outbox } from './outbox.js';
+import { Outbox, type OutboxEntry } from './outbox.js';
 import type { Random } from './random.js';
 import { DeviceSession } from './session.js';
 
@@ -25,6 +25,26 @@ export type DeviceStats = {
   dropped: number;
   reconnects: number;
 };
+
+/**
+ * Writes the outbox into the connection, oldest entry first, while the connection takes frames.
+ * Returns the entries it wrote, in order.
+ *
+ * Peek, write, and remove only what the connection took. Shifting first and pushing back on a
+ * refused write would put the entry behind anything enqueued in between — the emulator would become
+ * the source of the reordering the tests attribute to the broker. Removing on `true` is exact
+ * because `write()` counts the frame that filled the socket's buffer as taken; the first version
+ * counted it as refused, kept it at the head and wrote it a second time after `'drain'`.
+ */
+export function pumpOutbox(outbox: Outbox, connection: DeviceConnection): OutboxEntry[] {
+  const written: OutboxEntry[] = [];
+  for (let entry = outbox.peek(); entry !== null; entry = outbox.peek()) {
+    if (!connection.write(entry.frame)) break;
+    outbox.shift();
+    written.push(entry);
+  }
+  return written;
+}
 
 /**
  * One emulated device: its session, its chaos policy, its outbox, its socket and its timers.
@@ -134,12 +154,7 @@ export class DeviceClient {
 
   /** Drains the outbox into the socket as far as backpressure allows. Synchronous. */
   pump(): void {
-    for (let entry = this.#outbox.peek(); entry !== null; entry = this.#outbox.peek()) {
-      // Peek before writing, then remove only on success. Shifting first and pushing back on a
-      // refused write would put the entry behind anything enqueued in between — the emulator
-      // would become the source of the reordering the tests attribute to the broker.
-      if (!this.#connection.write(entry.frame)) return;
-      this.#outbox.shift();
+    for (const entry of pumpOutbox(this.#outbox, this.#connection)) {
       this.#stats.written += 1;
       messageLogger(this.#logger, entry.message).debug('telemetry message written');
     }

@@ -54,8 +54,8 @@ export type DeviceConnectionOptions = {
 /**
  * One device's socket to ingest, with DNS resolution and reconnect.
  *
- * It knows about one socket and nothing about message ordering — the outbox and the pump live in
- * `DeviceClient`. That split is what lets this class be tested on its own against a bare sink.
+ * It knows about one socket and nothing about message ordering — the outbox and the pump
+ * (`pumpOutbox`) live in `device.ts`. That split is what lets this class be tested on its own against a bare sink.
  */
 export class DeviceConnection {
   readonly #deviceId: string;
@@ -99,16 +99,27 @@ export class DeviceConnection {
     void this.#resolveAndConnect(0);
   }
 
-  /** The socket's own return value, so the caller's pump can stop on backpressure. */
+  /**
+   * Whether the socket took the frame.
+   *
+   * `true` means the frame is on its way and must not be written again — including the frame that
+   * filled the socket's buffer: `socket.write()` returns `false` once the buffer reaches its
+   * high-water mark "after admitting chunk" (Node stream docs), so that frame is queued, not
+   * refused. That case records `writable: false`, and the next call returns `false` until `'drain'`.
+   *
+   * `false` means the frame was not taken and stays queued: no connected socket, backpressure
+   * already recorded, or a socket that is destroyed or ending. The last case is the gap between
+   * `destroy()` — a chaos drop, a reset — and the `'close'` event that moves this connection to
+   * backoff; a write there raises `ERR_STREAM_DESTROYED` and its bytes go nowhere.
+   */
   write(frame: Buffer): boolean {
     const state = this.#state;
-    if (state.name !== 'connected' || !state.writable) return false;
-    const flushed = state.socket.write(frame);
-    if (!flushed) {
+    if (state.name !== 'connected' || !state.writable || !state.socket.writable) return false;
+    if (!state.socket.write(frame)) {
       // Queued in user memory; `'drain'` will call onWritable when the buffer is free again.
       this.#state = { ...state, writable: false };
     }
-    return flushed;
+    return true;
   }
 
   /** Destroys the socket and goes to backoff — what the `disconnect` and `restart` chaos modes do. */

@@ -37,6 +37,11 @@ function fixedRandom(value: number): Random {
   };
 }
 
+function isWritable(connection: DeviceConnection): boolean {
+  const state = connection.state;
+  return state.name === 'connected' && state.writable;
+}
+
 const open: { sinks: TestSink[]; connections: DeviceConnection[] } = { sinks: [], connections: [] };
 
 async function sink(): Promise<TestSink> {
@@ -131,7 +136,7 @@ describe('DeviceConnection', () => {
     expect((JSON.parse(lines[0] ?? '{}') as TelemetryMessage).seq).toBe(1);
   });
 
-  it('reports backpressure and resumes writing after the peer reads again', async () => {
+  it('takes the frame that fills the buffer, then refuses frames until the peer reads again', async () => {
     // The one thing worth testing here, and the reason these tests use a real socket at all: a
     // mocked socket would only test the mock's idea of when `write()` returns false.
     const target = await sink();
@@ -146,23 +151,18 @@ describe('DeviceConnection', () => {
 
     target.pauseConnections();
 
-    // Write until the kernel and the socket's own buffer are full. 64 KiB at a time so this
-    // terminates quickly; the cap stops a runaway if backpressure never appears.
+    // Write until the kernel and the socket's own buffer are full. 64 KiB at a time so this ends
+    // quickly; the cap stops a runaway if backpressure never appears. Every frame up to and
+    // including the one that fills the buffer is taken: that frame is queued, and reporting it
+    // as refused would make the pump write it again after 'drain'.
     const chunk = Buffer.alloc(64 * 1024, 0x61);
-    let refusedAfter = 0;
-    for (let i = 1; i <= 500; i += 1) {
-      if (!connection.write(chunk)) {
-        refusedAfter = i;
-        break;
-      }
+    let taken = 0;
+    while (isWritable(connection) && taken < 500) {
+      expect(connection.write(chunk)).toBe(true);
+      taken += 1;
     }
-
-    expect(refusedAfter).toBeGreaterThan(0);
-    const paused = connection.state;
-    expect(paused.name).toBe('connected');
-    // The state must record it, or the pump would keep writing into a full buffer.
-    expect(paused.name === 'connected' && paused.writable).toBe(false);
-    // A further write is refused rather than queued behind the backlog.
+    expect(isWritable(connection)).toBe(false);
+    // The next frame is refused rather than queued behind the backlog.
     expect(connection.write(chunk)).toBe(false);
 
     writable = false;
@@ -175,8 +175,25 @@ describe('DeviceConnection', () => {
       },
       { timeout: 5_000 },
     );
-    const resumed = connection.state;
-    expect(resumed.name === 'connected' && resumed.writable).toBe(true);
+    expect(isWritable(connection)).toBe(true);
+  });
+
+  it('refuses a frame once its socket is destroyed, before the close event arrives', async () => {
+    // `dropConnection()` destroys the socket at once, but the move to backoff waits for 'close',
+    // which Node emits later. A frame written in that gap is discarded with ERR_STREAM_DESTROYED,
+    // so it must be reported as not taken and stay in the outbox for the next connection.
+    const target = await sink();
+    const connection = connect(target.port);
+    connection.start();
+    await vi.waitFor(() => {
+      expect(connection.isConnected).toBe(true);
+    });
+
+    connection.dropConnection();
+
+    // Still inside the gap; otherwise the refusal below would come from the state check.
+    expect(connection.state.name).toBe('connected');
+    expect(connection.write(frame(1))).toBe(false);
   });
 
   it('abandons a connect attempt that never completes, instead of stalling forever', async () => {
