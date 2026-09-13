@@ -1,9 +1,8 @@
 import dns from 'node:dns/promises';
 import net from 'node:net';
 
-import { assertNever, type Logger } from '@telemetry/shared';
+import { assertNever, backoffDelay, type Logger } from '@telemetry/shared';
 
-import { backoffDelay } from './backoff.js';
 import type { IngestHost } from './config.js';
 import type { Random } from './random.js';
 
@@ -24,6 +23,14 @@ const CONNECT_TIMEOUT_MS = 10_000;
 
 /** Hard cap on waiting for a socket to close during shutdown, before it is destroyed outright. */
 const CLOSE_TIMEOUT_MS = 1_000;
+
+/**
+ * Reconnect schedule of one device: Full Jitter in `[0, min(BACKOFF_MAX_MS, BACKOFF_BASE_MS * 2 **
+ * attempt))` (emulator spec, decision 17; `backoffDelay` in the shared package explains the choice).
+ * `attempt` is 0-based and resets on a successful connect.
+ */
+export const BACKOFF_BASE_MS = 500;
+export const BACKOFF_MAX_MS = 10_000;
 
 export type ConnectionState =
   | { name: 'idle' }
@@ -254,7 +261,13 @@ export class DeviceConnection {
       () => {
         void this.#resolveAndConnect(next);
       },
-      backoffDelay(attempt, this.#random),
+      backoffDelay({
+        attempt,
+        baseMs: BACKOFF_BASE_MS,
+        maxMs: BACKOFF_MAX_MS,
+        // One draw from the seeded stream, the same number `random.range(0, ceiling)` used to take.
+        random: () => this.#random.float(),
+      }),
     );
     // The device retries forever; it must never be the reason a process refuses to exit.
     timer.unref();
