@@ -275,6 +275,7 @@ export class AmqpPublisher implements PublishPort {
         this.#stallClock.restart(Date.now());
         return;
       case 'close_model':
+        // Deferred like start_attempt: `#close` awaits `nextTurn()` before it touches amqplib.
         this.#closeModel();
         return;
       case 'start_backoff':
@@ -522,7 +523,7 @@ export class AmqpPublisher implements PublishPort {
         this.#onConfirm({ entry, generation, error });
       });
     } catch (error) {
-      this.#logger.debug({ err: error, generation }, 'publish threw');
+      this.#messageLog(entry).debug({ err: error, generation }, 'publish threw');
       this.#trigger({ generation, reason: 'publish_threw' });
       return false;
     }
@@ -551,7 +552,7 @@ export class AmqpPublisher implements PublishPort {
     }
     if (error !== null && error !== undefined) {
       // A nack. The entry stays in the ledger and goes out again on the next channel (decision 12).
-      this.#logger.debug({ err: error, generation }, 'publish nacked');
+      this.#messageLog(entry).debug({ err: error, generation }, 'publish nacked');
       this.#trigger({ generation, reason: 'nacked' });
       return;
     }
