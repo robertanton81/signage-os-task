@@ -1,3 +1,38 @@
+> **STATUS: SHIPPED 2026-09-14.** Landed as 10 commits on the worktree branch `worktree-websocket-transport`, `f9174c4..4a8e794`: the spec and plan commit, one commit per task, and two commits with the tests the reviews asked for. Not merged into `main` — the user merges. The full pre-flight passed right before the last commit: `pnpm format:check && pnpm lint && pnpm typecheck && pnpm test`, 567 tests in 29 files (223 in `apps/ingest`, 118 in `apps/emulator`, 226 in `packages/shared`). The unchecked `- [ ]` boxes below are historical; the work is done. **Do not re-execute this plan.** If you are changing the transport, work directly in `apps/ingest/src/{server,connection}.ts` and `apps/emulator/src/connection.ts`.
+>
+> **Library and version drift:** none. ws 8.21.3 and @types/ws 8.18.1 are as pinned; `ws` ships no types, so `@types/ws` is a devDependency of both apps. Two facts from the library shaped the code and the plan did not describe them:
+>
+> - ws 8.21.3 calls a successful `send()` callback with `null` (Node's stream write callback), although `@types/ws` 8.18.1 declares `(err?: Error)`. The emulator's gate reopening checked `error !== undefined` first and never reopened; `write()` now checks `error != null` (probe p17, `.local/research/websocket/2026-09-13-ws-probe-send-callback.mjs`).
+> - ws emits `upgrade` and then `open` in the same tick on the client, so a test double that awaits them one after the other never resolves; `test-device.ts` records the socket in an `upgrade` listener attached before `open` is awaited.
+>
+> **Plan prescriptions that needed adjustment:**
+>
+> - Task 5, scenario 12: a device TCP reset shows on the server as `close` 1006 with no `error` event (ws's `socketOnError` swallows socket errors; probe p15), so the scenario asserts reason `end`, `closeCode` 1006 and no warn line; the `'error'` listener's non-protocol branch has no test of its own, as the plan already stated.
+> - Task 5, scenario 22: `device.pings()` cannot discriminate there, because the device's socket is paused; the test asserts the drain result, the elapsed time and the close reason `shutdown` instead.
+> - Task 5, scenario 25 (added in `2bfbbd0` after the code review): a valid message that arrives in the same read as a binary one is dropped once the connection has decided to close; produced deterministically by sending both while the connection is paused.
+> - Task 6: the "goes to backoff when the server rejects the upgrade" scenario asserts the first error and close lines rather than exact arrays, because the seeded backoff can schedule a second, identical attempt inside the wait.
+> - Task 6: the `--experimental-transform-types` comment in both `test-source-hooks.ts` now names `ConfigError` alone as the parameter property that needs the flag (`FrameTooLongError` is gone).
+>
+> **Corrections applied during review:**
+>
+> - Task 5, code review (1 blocking): the guard that ignores messages after the connection decided to close had no test; fixed in `2bfbbd0`. Spec compliance and test quality passed with suggestions (an untested double `destroy()`, the upgrade socket's error listener, the post-listen accept error — all narrow logging branches, left as they are).
+> - Task 6, test quality (3 blocking) and code review (1 blocking, the same gap): a stop during a DNS lookup, the one-second close cap against a peer that never reads the close frame, and the send callback of a terminated socket were untested; fixed in `4a8e794`, which also pins the debug level of the post-stop socket error.
+> - Task 7, code review: passed; the grammar of the transform-types comment fixed in `4a8e794`.
+> - Design spec: four review rounds (`.local/` transcripts are not kept; the findings are folded into the spec): the liveness ping had to skip every connection whose `readyState` is not `OPEN`, whichever side began the close; `beginClose()` gates on `readyState`; ws's `close()`, `ping()` and `pong()` semantics in every ready state are cited from the source.
+>
+> **Deferrals worth tracking:**
+>
+> - A pre-upgrade idle bound on the device port: an HTTP client that connects and sends nothing is bounded only by Node's `headersTimeout` (60 s); T27 (no connection cap) covers the same class.
+> - The stale-socket identity check in the emulator's send callback (`current.socket === socket`) cannot be reached: a successful callback fires while its socket is alive, and a new socket opens only after the old one's `close`, a backoff, a lookup and a handshake. Kept as a one-line guard with a comment.
+> - README (step 8): a `websocat` one-liner for field debugging (T50) and the production edge (TLS at the balancer, authentication at the upgrade, an L7 balancer; spec decision 14).
+> - Emulator: no client-side ping (T54); a device detects a silently dead ingest through TCP keepalive on the upgrade response's socket.
+>
+> **Scripted run against RabbitMQ 4.3 (Task 8), 2026-09-14.** `node .local/research/2026-09-13-ingest-scripted-run-ws.mjs` ran the built entry point of `3fdf12a` with `ws` devices against a throwaway `rabbitmq:4.3-management` container (RabbitMQ 4.3.5, Erlang 27.3.4.17); the output is in `.local/research/2026-09-13-ingest-scripted-run-ws-output.txt`. All seven scenarios passed: (1) 20 messages, 20 confirms, 20 distinct ids, the peeked properties as before; (2) 83 messages across `docker restart`, 503 `connecting` during it, recycle as `channel_closed`, none missing; (3) the deleted queue: `message returned` at error, recycle `returned`, the queue declared again and the message in it; (4) the resource alarm: 503 `blocked`, a device's `bufferedAmount` reached the 64 KiB gate at 5001 messages, no recycle during the alarm, all 5001 in the queue after it; (5) SIGTERM: exit 0 after 16 ms, both devices received close code 1001 with reason `ingest shutting down`, no budget warning; (6) invalid messages: two `message rejected` lines (`invalid_schema`, `invalid_json`), the connection still open, only the valid message in the queue; (7) the frozen broker: 200 messages published, none confirmed, heartbeat timeout after 4655 ms, all 200 published again after `docker unpause`, 282 in the queue with 200 distinct.
+>
+> **Two-instance probe, 2026-09-14.** `node .local/research/2026-09-13-ingest-two-instance-probe-ws.mjs` (output in `2026-09-13-ingest-two-instance-probe-ws-output.txt`): two ingest instances on one broker, the built emulator spread over both. All nine checks passed: both ready; a hand-driven WebSocket with two messages two seconds apart, then two malformed messages rejected and the connection kept; 10 and 20 devices as configured; the event rate follows the interval; devices published via both instances with no sequence gap; SIGTERM on one instance with 8 connections drained and exited 0 in 12 ms; all 8 of its devices continued on the other instance; 856 messages, 10 devices, no gaps across the failover; readiness followed the broker and a stop without a broker exited 0.
+>
+> **Plan history below is preserved as-written for context. Treat the live code as authoritative.**
+
 # WebSocket Device Transport Implementation Plan
 
 **Goal:** Devices talk to ingest over WebSocket instead of raw TCP with newline-delimited JSON, with the consistency mechanism, the publisher and the processing design untouched.
