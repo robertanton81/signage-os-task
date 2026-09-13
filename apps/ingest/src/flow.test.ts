@@ -72,8 +72,13 @@ describe('Window', () => {
     expect(window.isOpen).toBe(true);
   });
 
-  it('throws on a remove from an empty window', () => {
-    expect(() => new Window(3).remove()).toThrow('window underflow');
+  it('throws on a remove from an empty window and leaves the window unchanged', () => {
+    const window = new Window(3);
+
+    expect(() => window.remove()).toThrow('window underflow');
+    // A guard placed after the decrement would throw the same error but leave the size at -1.
+    expect(window.size).toBe(0);
+    expect(window.isOpen).toBe(true);
   });
 });
 

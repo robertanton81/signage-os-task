@@ -35,7 +35,10 @@ export class Window {
     return 'unchanged';
   }
 
-  /** Counts one confirm; reports `reopened` only on the remove that reopens the window. */
+  /**
+   * Counts one confirm; reports `reopened` only on the remove that reopens the window. Throws
+   * `window underflow` on an empty window, a programmer error, and leaves the window unchanged.
+   */
   remove(): 'reopened' | 'unchanged' {
     if (this.#size === 0) {
       // A programmer error: the server removes exactly once per message it added.
