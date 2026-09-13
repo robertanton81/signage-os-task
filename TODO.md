@@ -105,6 +105,7 @@ Hotovo 2026-09-12 podle `docs/specs/2026-09-12-emulator-design.md` a `docs/plans
 - [ ] Test: paralelní zpracování více zařízení bez vzájemných konfliktů.
 - [ ] Test: více instancí processing služby souběžně nad stejnou frontou dává konzistentní výsledek.
 - [ ] Test: nevalidní zpráva je odmítnuta a nedostane se do fronty.
+- [ ] Test: ingest publisher proti skutečnému RabbitMQ — restart brokeru s připojenými zařízeními (znovupublikace nepotvrzených zpráv), smazaná fronta (return → recyklace → nová deklarace topologie), blokované spojení (resource alarm), SIGTERM s připojenými zařízeními (ingest spec 2026-09-13, rozhodnutí 25).
 - [ ] Zapojit integrační testy do rootového `test` skriptu.
 - [ ] Volitelně: CI pipeline pro automatický běh testů.
 

@@ -100,19 +100,19 @@ The measurement is conservative: in a real run the receiving side is `apps/inges
 
 ### Module layout (`apps/emulator/src/`)
 
-| File            | Kind   | Responsibility                                                                                                   |
-| --------------- | ------ | ---------------------------------------------------------------------------------------------------------------- |
-| `random.ts`     | pure   | `createRandom(seed)` → mulberry32 PRNG with `float()`, `int(min, max)`, `bool(probability)`, `pick(array)`       |
-| `backoff.ts`    | pure   | `backoffDelay(attempt, random)` — Full Jitter, so the delay schedule is unit-tested without waiting for it       |
-| `generator.ts`  | pure   | Per-device baselines and the bounded random walk; builds each payload from the walk state                        |
-| `session.ts`    | pure   | `DeviceSession`: identity, `sessionId` minting, `seq`, tick counter, `tick()` → `TelemetryMessage[]`             |
-| `outbox.ts`     | pure   | Bounded FIFO with the diagnostic-sparing drop policy; reports what it dropped                                    |
-| `chaos.ts`      | pure   | Mode parsing; `ChaosPolicy` for the per-message modes; `nextConnectionChaos()` for the connection-level schedule |
-| `config.ts`     | pure   | The emulator's zod schema, `INGEST_HOSTS` and `EMULATOR_CHAOS` parsing, the device-id cross-check                |
-| `connection.ts` | impure | `DeviceConnection`: DNS resolution, socket lifecycle, backoff, the write pump                                    |
-| `device.ts`     | impure | `DeviceClient`: wires session + chaos + outbox + connection, owns the tick and heartbeat timers                  |
-| `fleet.ts`      | impure | `Fleet`: N clients, staggered start, the summary line, the shutdown drain                                        |
-| `main.ts`       | impure | Entrypoint: `loadConfig`, `createLogger`, build the fleet, install signal handlers                               |
+| File            | Kind   | Responsibility                                                                                                                                                                                                                                                                   |
+| --------------- | ------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `random.ts`     | pure   | `createRandom(seed)` → mulberry32 PRNG with `float()`, `int(min, max)`, `bool(probability)`, `pick(array)`                                                                                                                                                                       |
+| `backoff.ts`    | pure   | `backoffDelay(attempt, random)` — Full Jitter, so the delay schedule is unit-tested without waiting for it. Moved to `packages/shared` as `backoffDelay({ attempt, baseMs, maxMs, random })` by the ingest spec (2026-09-13, decision 20); the emulator passes its own constants |
+| `generator.ts`  | pure   | Per-device baselines and the bounded random walk; builds each payload from the walk state                                                                                                                                                                                        |
+| `session.ts`    | pure   | `DeviceSession`: identity, `sessionId` minting, `seq`, tick counter, `tick()` → `TelemetryMessage[]`                                                                                                                                                                             |
+| `outbox.ts`     | pure   | Bounded FIFO with the diagnostic-sparing drop policy; reports what it dropped                                                                                                                                                                                                    |
+| `chaos.ts`      | pure   | Mode parsing; `ChaosPolicy` for the per-message modes; `nextConnectionChaos()` for the connection-level schedule                                                                                                                                                                 |
+| `config.ts`     | pure   | The emulator's zod schema, `INGEST_HOSTS` and `EMULATOR_CHAOS` parsing, the device-id cross-check                                                                                                                                                                                |
+| `connection.ts` | impure | `DeviceConnection`: DNS resolution, socket lifecycle, backoff, the write pump                                                                                                                                                                                                    |
+| `device.ts`     | impure | `DeviceClient`: wires session + chaos + outbox + connection, owns the tick and heartbeat timers                                                                                                                                                                                  |
+| `fleet.ts`      | impure | `Fleet`: N clients, staggered start, the summary line, the shutdown drain                                                                                                                                                                                                        |
+| `main.ts`       | impure | Entrypoint: `loadConfig`, `createLogger`, build the fleet, install signal handlers                                                                                                                                                                                               |
 
 `apps/*` depend on `packages/*` and never the reverse (`CLAUDE.md`): the emulator imports `TelemetryMessage`, `encodeFrame`, `messageIdentity`, `createLogger`, `messageLogger`, `loadConfig`, `envInt`, `logLevelEnv` and `shutdownEnv` from `@telemetry/shared`, and adds nothing to it.
 
