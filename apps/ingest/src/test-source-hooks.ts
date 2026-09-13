@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
  * `import './config.js'` to `config.ts`, and `@telemetry/shared` would resolve to the package's
  * built `dist/`, which may be stale or missing. The two rules below close that gap; the second is
  * the alias in `vitest.config.ts`. The child also needs `--experimental-transform-types`: the
- * shared package declares parameter properties (`FrameTooLongError`, `ConfigError`), which plain
+ * shared package declares parameter properties (`ConfigError`), which plain
  * type stripping rejects.
  *
  * Not named `*.test.ts`: the unit project collects those, and a module with no `test()` call would

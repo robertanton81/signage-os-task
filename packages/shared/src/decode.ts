@@ -27,8 +27,8 @@ const MAX_ISSUE_MESSAGE_LENGTH = 200;
  * Turns the text of one frame into a validated message or a structured rejection. Never throws:
  * invalid input is a normal path that the caller logs (with `identity`) and drops.
  *
- * The caller must bound `text` before calling. Ingest gets that from `FrameDecoder`
- * (`MAX_FRAME_BYTES`); the AMQP consumer in processing has to bound the body itself.
+ * The caller must bound `text` before calling. Ingest gets that from the WebSocket server's
+ * `maxPayload` (`MAX_FRAME_BYTES`); the AMQP consumer in processing has to bound the body itself.
  */
 export function decodeTelemetryMessage(text: string): DecodeResult {
   let value: unknown;
