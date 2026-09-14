@@ -88,6 +88,8 @@ export async function main(): Promise<void> {
   consumer.start();
   // In parallel with the link: the consumer registers only once both are ready (decision 10). The
   // only rejection is an index conflict, a deployment bug no retry fixes: one fatal line, exit 1.
+  // A start aborted by the shutdown resolves 'aborted' whatever ended its attempt, so this exit
+  // never competes with the lifecycle handler's.
   void store.start(startup.signal).then(
     (outcome) => {
       if (outcome === 'ready') {

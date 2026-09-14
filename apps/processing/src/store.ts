@@ -257,13 +257,16 @@ export class MongoStore implements StorePort, StoreWatcher {
         this.#logger.info({ attempt }, 'store ready');
         return 'ready';
       } catch (error) {
+        if (signal.aborted) {
+          // A stop during the attempt: the failure that ends it is not worth a line. This check
+          // comes first so that an aborted start always resolves, even on an index conflict — a
+          // rejection here would race the shutdown that aborted it for the exit (the entry point
+          // exits 1 on the rejection), and a conflict is reported again by the next start anyway.
+          return 'aborted';
+        }
         const failure = describeMongoError(error);
         if (isIndexConflict(failure)) {
           throw new StoreError(failure);
-        }
-        if (signal.aborted) {
-          // A stop during the attempt: the failure that ends it is not worth a line.
-          return 'aborted';
         }
         this.#logger.warn({ attempt, failure }, 'store not ready');
       }
