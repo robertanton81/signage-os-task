@@ -110,6 +110,18 @@ function isDuplicateKey(failure: StoreFailure): boolean {
 }
 
 /**
+ * The one startup failure no retry fixes (decision 10): the identity index exists under another
+ * name or with another key, which is a deployment bug the operator has to resolve.
+ */
+export function isIndexConflict(failure: StoreFailure): boolean {
+  return (
+    failure.kind === 'server' &&
+    failure.code !== undefined &&
+    INDEX_CONFLICT_CODES.has(failure.code)
+  );
+}
+
+/**
  * The MongoDB shell of the store port (decisions 10 and 11). One client per instance, every
  * option from one timeout, a journaled write concern, and one driver call per port method with
  * `maxTimeMS`. No I/O in the constructor.
@@ -246,10 +258,8 @@ export class MongoStore implements StorePort, StoreWatcher {
         return 'ready';
       } catch (error) {
         const failure = describeMongoError(error);
-        if (failure.kind === 'server' && failure.code !== undefined) {
-          if (INDEX_CONFLICT_CODES.has(failure.code)) {
-            throw new StoreError(failure);
-          }
+        if (isIndexConflict(failure)) {
+          throw new StoreError(failure);
         }
         this.#logger.warn({ attempt, failure }, 'store not ready');
       }

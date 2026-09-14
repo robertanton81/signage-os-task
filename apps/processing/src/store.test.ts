@@ -12,8 +12,9 @@ import {
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { StoreError } from './failure.js';
-import { exampleEvents } from './fixtures.js';
-import { MongoStore, describeMongoError } from './store.js';
+import { EXAMPLE_RECEIVED_AT, exampleEvents, exampleMessages } from './fixtures.js';
+import { buildStateUpdate } from './state-update.js';
+import { MongoStore, describeMongoError, isIndexConflict } from './store.js';
 
 /**
  * The store shell without a database: `describeMongoError` over the driver's own error classes
@@ -162,12 +163,41 @@ describe('describeMongoError', () => {
   });
 });
 
+describe('isIndexConflict', () => {
+  it.each([
+    { label: 'IndexOptionsConflict (85)', code: 85, expected: true },
+    { label: 'IndexKeySpecsConflict (86)', code: 86, expected: true },
+    { label: 'an unrelated server code (50)', code: 50, expected: false },
+    { label: 'an authentication failure (18), which is retried', code: 18, expected: false },
+  ])('is $expected for $label', ({ code, expected }) => {
+    expect(isIndexConflict(describeMongoError(new MongoServerError({ code, errmsg: 'x' })))).toBe(
+      expected,
+    );
+  });
+
+  it('is false for every failure that is not a server error', () => {
+    expect(isIndexConflict(describeMongoError(new MongoNetworkError('n')))).toBe(false);
+    expect(isIndexConflict(describeMongoError(new Error('e')))).toBe(false);
+  });
+});
+
 describe('MongoStore without a database', () => {
   it('rejects a write with a server-selection StoreError when nothing listens on the port', async () => {
     const { logger } = captureLogger();
     const store = await storeOnClosedPort(logger);
 
     await expect(store.insertEvent(exampleEvents.status)).rejects.toSatisfy(
+      (error: unknown) => error instanceof StoreError && error.failure.kind === 'server_selection',
+    );
+  });
+
+  it('rejects the state write the same way, through its own catch', async () => {
+    const { logger } = captureLogger();
+    const store = await storeOnClosedPort(logger);
+
+    await expect(
+      store.applyState(buildStateUpdate(exampleMessages.status, EXAMPLE_RECEIVED_AT)),
+    ).rejects.toSatisfy(
       (error: unknown) => error instanceof StoreError && error.failure.kind === 'server_selection',
     );
   });
