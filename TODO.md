@@ -118,7 +118,7 @@ Hotovo 2026-09-14 podle `docs/specs/2026-09-14-docker-compose-design.md` a `docs
 - [ ] Test: více instancí processing služby souběžně nad stejnou frontou dává konzistentní výsledek.
 - [ ] Test: nevalidní zpráva je odmítnuta a nedostane se do fronty.
 - [ ] Test: ingest publisher proti skutečnému RabbitMQ — restart brokeru s připojenými zařízeními (znovupublikace nepotvrzených zpráv), smazaná fronta (return → recyklace → nová deklarace topologie), blokované spojení (resource alarm), SIGTERM s připojenými zařízeními, zamrzlý broker (`docker pause`: heartbeat timeout → znovupublikace všech nepotvrzených zpráv) (ingest spec 2026-09-13, rozhodnutí 25).
-- [ ] Test: processing consumer proti skutečnému RabbitMQ a MongoDB — dvanáct scénářů skriptovaného běhu: normální tok, duplicita, pořadí uvnitř sekce i napříč sekcemi, restart session, dvě instance, poison zprávy, zastavená a zamrzlá MongoDB (pauza a obnovení konzumace), restart brokeru, SIGTERM s rozpracovanými zprávami, špatné přihlašovací údaje (processing spec 2026-09-13, rozhodnutí 27).
+- [ ] Test: processing consumer proti skutečnému RabbitMQ a MongoDB — dvanáct scénářů skriptovaného běhu: normální tok, duplicita, pořadí uvnitř sekce i napříč sekcemi, restart session, dvě instance, poison zprávy, zastavená a zamrzlá MongoDB (pauza a obnovení konzumace), restart brokeru, SIGTERM s rozpracovanými zprávami, špatné přihlašovací údaje (processing spec 2026-09-13, rozhodnutí 27). Navíc zastavení s čekající registrací konzumenta u zamrzlého brokeru — scénář C11c (integration spec 2026-09-14, rozhodnutí 24), doplněný po opravě `stop()` z 2026-09-14.
 - [ ] Zapojit integrační testy do rootového `test` skriptu.
 - [ ] Volitelně: CI pipeline pro automatický běh testů.
 
