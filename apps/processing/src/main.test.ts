@@ -192,11 +192,10 @@ describe('processing process', () => {
       attempt: 0,
       failure: { kind: 'server_selection' },
     });
-    expect.soft(lines.find((line) => line.msg === 'consumer reconnect scheduled')).toMatchObject({
-      reason: 'connect_failed',
-      attempt: 1,
-      delayMs: expect.any(Number) as number,
-    });
+    const scheduled = lines.find((line) => line.msg === 'consumer reconnect scheduled');
+    expect.soft(scheduled).toMatchObject({ reason: 'connect_failed', attempt: 1 });
+    // The delay is random by design; a NaN or a negative number from a broken wiring is not.
+    expect.soft(scheduled?.['delayMs']).toBeGreaterThan(0);
     const afterSignal = lines.slice(lines.findIndex((line) => line.msg === 'shutting down'));
     expect
       .soft(afterSignal.map((line) => line.msg).filter((msg) => SHUTDOWN_LINES.includes(msg)))
