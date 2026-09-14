@@ -56,6 +56,8 @@ deployment.
 | 28  | Compose project name                                                  | `name: telemetry` at the top level.                                                                                                                                                                                                                                                                                                                                                                            | Otherwise the project is named after the directory, which differs between a clone and a worktree; container names then differ and the check's log parsing becomes fragile.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | 29  | Bind mounts, `--watch`, hot reload, profiles                          | None.                                                                                                                                                                                                                                                                                                                                                                                                          | The assignment asks for a stack that runs the system, not a development inner loop. A `profiles` entry that hid the emulator would break the "one command starts everything" requirement.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
+Amended on 2026-09-14, after `/verify` of the Compose plan: decision 18's two mappings bind to the loopback interface (`127.0.0.1:15672:15672`, `127.0.0.1:27017:27017`), so the development credentials in this file are reachable only from the developer's own machine, not from the network it sits on; the Compose file below carries the change. A developer whose Docker engine runs on another host puts `0.0.0.0` (or that host's address) on the left-hand side instead. T60 (the collision with a locally installed broker or database) is unchanged.
+
 ## Chosen Approach
 
 One image built from the monorepo with three runtime targets, five Compose services, health checks
@@ -242,8 +244,10 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-telemetry}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-telemetry-dev}
     ports:
-      # Management UI on http://localhost:15672. Never scaled, so a fixed port is safe.
-      - '15672:15672'
+      # Management UI on http://localhost:15672, bound to the loopback interface so that the
+      # development credentials are not reachable from the network. Never scaled, so a fixed port
+      # is safe; a remote Docker host needs 0.0.0.0 on the left-hand side instead.
+      - '127.0.0.1:15672:15672'
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
@@ -261,7 +265,8 @@ services:
       MONGO_INITDB_ROOT_USERNAME: ${MONGODB_USER:-telemetry}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGODB_PASSWORD:-telemetry-dev}
     ports:
-      - '27017:27017'
+      # Loopback only, as above.
+      - '127.0.0.1:27017:27017'
     volumes:
       - mongodb-data:/data/db
     healthcheck:

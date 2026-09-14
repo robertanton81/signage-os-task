@@ -19,8 +19,10 @@ services:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-telemetry}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-telemetry-dev}
     ports:
-      # Management UI on http://localhost:15672. Never scaled, so a fixed port is safe.
-      - '15672:15672'
+      # Management UI on http://localhost:15672, bound to the loopback interface so that the
+      # development credentials are not reachable from the network. Never scaled, so a fixed port
+      # is safe; a remote Docker host needs 0.0.0.0 on the left-hand side instead.
+      - '127.0.0.1:15672:15672'
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
@@ -38,7 +40,8 @@ services:
       MONGO_INITDB_ROOT_USERNAME: ${MONGODB_USER:-telemetry}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGODB_PASSWORD:-telemetry-dev}
     ports:
-      - '27017:27017'
+      # Loopback only, as above.
+      - '127.0.0.1:27017:27017'
     volumes:
       - mongodb-data:/data/db
     healthcheck:
