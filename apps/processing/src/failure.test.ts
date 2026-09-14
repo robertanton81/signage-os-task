@@ -58,7 +58,7 @@ describe('classifyFailure', () => {
     { label: 'a schema validation refusal (121)', code: 121, labels: [] },
     { label: 'an authentication failure (18)', code: 18, labels: [] },
     {
-      label: 'a duplicate key (11000), which the store turns into a result before it gets here',
+      label: 'a duplicate key (11000), which the store must turn into a result before it gets here',
       code: 11000,
       labels: [],
     },

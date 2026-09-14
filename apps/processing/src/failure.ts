@@ -22,7 +22,10 @@ export type StoreFailure =
 /**
  * What a store port method rejects with. An `Error` subclass rather than the bare view: the lint
  * rules `only-throw-error` and `prefer-promise-reject-errors` forbid rejecting with a plain object,
- * and a stack trace helps when a permanent failure is logged.
+ * and a stack trace helps when a permanent failure is logged. The messages are driver text, which
+ * can quote the connection string: the store redacts URL userinfo when it builds the view, and a
+ * log line passes the error as `err` (or the view as a plain field), so the shared logger redacts
+ * it again — never copy `.message` into a field of its own.
  */
 export class StoreError extends Error {
   override readonly name = 'StoreError';
@@ -49,8 +52,10 @@ export const TRANSIENT_SERVER_CODES: ReadonlySet<number> = new Set([
 /**
  * Transient → retry in place, then pause the instance; closed → the client is shutting down, so
  * the delivery is left for the broker to requeue; permanent → dead-letter (decision 9). A duplicate
- * key (11000) never gets here: the store turns it into the `'duplicate'` result before the
- * handler sees it, so as a view it is permanent like every other unlisted server code.
+ * key (11000) must never reach this function: the store port's contract is to turn it into the
+ * `'duplicate'` result before the handler sees a failure (decision 8, `store.ts`). Should that
+ * contract ever break, 11000 falls through as permanent like every other unlisted server code, and
+ * a duplicate is dead-lettered instead of silently accepted — the safe failure mode.
  */
 export function classifyFailure(failure: StoreFailure): FailureClass {
   switch (failure.kind) {
