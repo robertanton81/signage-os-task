@@ -99,12 +99,14 @@ Hotovo 2026-09-14 podle `docs/specs/2026-09-13-processing-design.md` a `docs/pla
 
 ## 6. Docker Compose (vývojový)
 
-- [ ] Služby: RabbitMQ (s management UI), MongoDB, ingest, processing, emulátor.
-- [ ] Dockerfile pro každou aplikaci, build z monorepa.
-- [ ] Závislosti a health checky – aplikace startují až po připravenosti infrastruktury.
-- [ ] Snadné navýšení počtu instancí ingest a processing standardním mechanismem Compose. Ověřit, že zařízení se rozdělují mezi více ingest instancí.
-- [ ] Snadné navýšení počtu emulovaných zařízení přes env.
-- [ ] Ověřit end-to-end: spuštění celého systému jedním příkazem, data dotečou do MongoDB.
+Hotovo 2026-09-14 podle `docs/specs/2026-09-14-docker-compose-design.md` a `docs/plans/2026-09-14-docker-compose-plan.md` (9 commitů `5bd6b96..`, 874 testů: 855 původních beze změny a 19 nových pro čisté pomocné funkce ověřovacího skriptu). Skript `scripts/compose-check.mjs` prošel ve výchozím režimu, ve škálovaném režimu (2 ingest, 3 processing) a s 25 emulovanými zařízeními; výsledky jsou v hlavičce plánu.
+
+- [x] Služby: RabbitMQ (s management UI), MongoDB, ingest, processing, emulátor.
+- [x] Dockerfile pro každou aplikaci, build z monorepa.
+- [x] Závislosti a health checky – aplikace startují až po připravenosti infrastruktury.
+- [x] Snadné navýšení počtu instancí ingest a processing standardním mechanismem Compose. Ověřit, že zařízení se rozdělují mezi více ingest instancí.
+- [x] Snadné navýšení počtu emulovaných zařízení přes env.
+- [x] Ověřit end-to-end: spuštění celého systému jedním příkazem, data dotečou do MongoDB.
 
 ## 7. Integrační testy
 
