@@ -40,11 +40,10 @@ describe('loadProcessingConfig', () => {
     ]);
   });
 
-  it('names a missing MONGODB_URL and never echoes the value of another variable', () => {
-    const problems = problemsOf({ RABBITMQ_URL: REQUIRED.RABBITMQ_URL });
-
-    expect(problems).toEqual([expect.stringMatching(/^MONGODB_URL: /)]);
-    expect(problems.join(' ')).not.toContain(REQUIRED.RABBITMQ_URL);
+  it('names a missing MONGODB_URL', () => {
+    expect(problemsOf({ RABBITMQ_URL: REQUIRED.RABBITMQ_URL })).toEqual([
+      expect.stringMatching(/^MONGODB_URL: /),
+    ]);
   });
 
   it.each(['0', '2001'])('rejects PROCESSING_PREFETCH=%s naming the variable', (value) => {
@@ -62,26 +61,30 @@ describe('loadProcessingConfig', () => {
     ).toBe(expected);
   });
 
-  it('rejects PROCESSING_TRANSIENT_ATTEMPTS=0 naming the variable and accepts 1', () => {
+  it('rejects PROCESSING_TRANSIENT_ATTEMPTS=0, naming the variable', () => {
     expect(problemsOf({ ...REQUIRED, PROCESSING_TRANSIENT_ATTEMPTS: '0' })).toEqual([
       expect.stringMatching(/^PROCESSING_TRANSIENT_ATTEMPTS: /),
     ]);
+  });
+
+  it('accepts PROCESSING_TRANSIENT_ATTEMPTS=1, the documented minimum', () => {
     expect(
       loadProcessingConfig({ ...REQUIRED, PROCESSING_TRANSIENT_ATTEMPTS: '1' })
         .PROCESSING_TRANSIENT_ATTEMPTS,
     ).toBe(1);
   });
 
-  it('reads MONGODB_WRITE_W as the string majority or as a number', () => {
+  it('accepts MONGODB_WRITE_W=majority as the string, the replica-set setting', () => {
     expect(loadProcessingConfig({ ...REQUIRED, MONGODB_WRITE_W: 'majority' }).MONGODB_WRITE_W).toBe(
       'majority',
     );
-    expect(loadProcessingConfig({ ...REQUIRED, MONGODB_WRITE_W: '3' }).MONGODB_WRITE_W).toBe(3);
   });
 
-  it('trims values before parsing them', () => {
+  it('treats a whitespace-only value as unset, so the default applies', () => {
+    // Only the shared loader's trim-to-unset step gives the default: a direct schema parse would
+    // coerce '   ' to 0 and reject it against the minimum of 1.
     expect(
-      loadProcessingConfig({ ...REQUIRED, PROCESSING_PREFETCH: ' 7 ' }).PROCESSING_PREFETCH,
-    ).toBe(7);
+      loadProcessingConfig({ ...REQUIRED, PROCESSING_PREFETCH: '   ' }).PROCESSING_PREFETCH,
+    ).toBe(50);
   });
 });

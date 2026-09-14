@@ -30,7 +30,7 @@ export const processingEnvSchema = z.object({
   // more expects more, and a silent server-side cap is the misconfiguration this check exposes.
   PROCESSING_PREFETCH: envInt({ min: 1, max: 2_000, defaultValue: 50 }),
   // Consecutive transient MongoDB failures of one handler before the instance pauses its consumer
-  // (decision 12).
+  // (processing spec, decision 12).
   PROCESSING_TRANSIENT_ATTEMPTS: envInt({ min: 1, defaultValue: 5 }),
 });
 
