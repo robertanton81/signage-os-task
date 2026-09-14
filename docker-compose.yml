@@ -1,0 +1,127 @@
+# Development stack (assignment section 4: "vývojový, nikoliv produkční").
+#
+#   docker compose up -d --build --wait                                          # everything, one command
+#   docker compose up -d --build --wait --scale ingest=2 --scale processing=3    # more instances
+#   EMULATOR_DEVICE_COUNT=200 docker compose up -d --build --wait                # more devices
+#   docker compose down -v                                                       # reset, volumes included
+#
+# Every ${VAR:-default} below can be set in the shell or in a .env file next to this file
+# (.env.example lists them). The credentials are development credentials and belong in this file
+# (CLAUDE.md). Both images apply them only when they initialise an empty data directory, so
+# changing one on a stack that has already run needs `docker compose down -v` first. A password
+# goes into two URLs: use URL-safe characters or percent-encode it.
+name: telemetry
+
+services:
+  rabbitmq:
+    image: rabbitmq:4.3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-telemetry}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-telemetry-dev}
+    ports:
+      # Management UI on http://localhost:15672. Never scaled, so a fixed port is safe.
+      - '15672:15672'
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      # Stage-4 node health check: opens a TCP connection to every enabled listener.
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'check_port_connectivity']
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+      start_interval: 1s
+
+  mongodb:
+    image: mongo:8.0
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGODB_USER:-telemetry}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGODB_PASSWORD:-telemetry-dev}
+    ports:
+      - '27017:27017'
+    volumes:
+      - mongodb-data:/data/db
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+      start_interval: 1s
+
+  ingest:
+    build:
+      context: .
+      target: ingest
+    init: true
+    stop_grace_period: 20s
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-telemetry}:${RABBITMQ_PASSWORD:-telemetry-dev}@rabbitmq:5672
+      HEALTH_PORT: '8080'
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --spider -q http://127.0.0.1:$${HEALTH_PORT}/readyz']
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+    # No published port: a fixed host port would make `--scale ingest=N` fail on a port conflict,
+    # and nothing outside the Compose network needs to reach the device socket.
+
+  processing:
+    build:
+      context: .
+      target: processing
+    init: true
+    # 17 s worst case: SHUTDOWN_TIMEOUT_MS (10) + AMQP_CLOSE_TIMEOUT_MS (2) + MONGODB_TIMEOUT_MS
+    # (5), because the shutdown awaits the consumer and then the store, one after the other.
+    # Raising SHUTDOWN_TIMEOUT_MS or MONGODB_TIMEOUT_MS means raising this too.
+    stop_grace_period: 30s
+    environment:
+      RABBITMQ_URL: amqp://${RABBITMQ_USER:-telemetry}:${RABBITMQ_PASSWORD:-telemetry-dev}@rabbitmq:5672
+      MONGODB_URL: mongodb://${MONGODB_USER:-telemetry}:${MONGODB_PASSWORD:-telemetry-dev}@mongodb:27017/?authSource=admin
+      HEALTH_PORT: '8080'
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      PROCESSING_PREFETCH: ${PROCESSING_PREFETCH:-50}
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget --spider -q http://127.0.0.1:$${HEALTH_PORT}/readyz']
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+      start_interval: 1s
+
+  emulator:
+    build:
+      context: .
+      target: emulator
+    init: true
+    stop_grace_period: 20s
+    environment:
+      # `ingest` resolves to every ingest replica; the emulator pools the addresses and each
+      # device picks one at random, which is how devices spread when ingest is scaled.
+      INGEST_HOSTS: ingest:4000
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      EMULATOR_DEVICE_COUNT: ${EMULATOR_DEVICE_COUNT:-10}
+      EMULATOR_EVENT_INTERVAL_MS: ${EMULATOR_EVENT_INTERVAL_MS:-1000}
+      EMULATOR_CHAOS: ${EMULATOR_CHAOS:-}
+      EMULATOR_SEED: ${EMULATOR_SEED:-1}
+    depends_on:
+      ingest:
+        condition: service_healthy
+    # Raise the load with EMULATOR_DEVICE_COUNT, never with `--scale emulator=N`: every replica
+    # would get the same EMULATOR_DEVICE_ID_PREFIX and therefore mint the same device ids.
+    # No healthcheck: the emulator has no readiness endpoint and nothing depends on it.
+
+volumes:
+  rabbitmq-data:
+  mongodb-data:
