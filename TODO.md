@@ -131,7 +131,7 @@ Hotovo 2026-09-14 podle `docs/specs/2026-09-14-docker-compose-design.md` a `docs
 - [ ] Jak spustit více instancí ingest a processing.
 - [ ] Datový model a zvolená metadata zpráv s odůvodněním.
 - [ ] Řešení race conditions, pořadí, deduplikace a atomicity.
-- [ ] Známé limity a vědomé kompromisy.
+- [ ] Známé limity a vědomé kompromisy. Uvést, že přihlašovací údaje v `docker-compose.yml` jsou vývojové zástupné hodnoty (compose spec 2026-09-14, rozhodnutí 20 a 21): platí jen uvnitř sítě Compose, publikované porty 15672 a 27017 jsou vázané na loopback hostitele, hodnoty lze přepsat v `.env` a skener tajemství je hlásí záměrně; produkční nasazení dodává skutečné údaje z prostředí.
 - [ ] Co byste při více času doplnili nebo řešili jinak.
 
 ## 9. Finální kontrola a odevzdání
