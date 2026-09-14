@@ -221,10 +221,10 @@ describe('detectGap', () => {
     expect(detectGap(before, at(seq, sessionId))).toBeUndefined();
   });
 
-  it('reports the previous and the received seq when a value of the same session was skipped', () => {
-    expect(detectGap(exampleState, at(lastEvent.seq + 3))).toEqual({
-      previousSeq: lastEvent.seq,
-      seq: lastEvent.seq + 3,
-    });
+  it.each([
+    { label: 'the smallest gap, one skipped value', seq: lastEvent.seq + 2 },
+    { label: 'a wider gap', seq: lastEvent.seq + 3 },
+  ])('reports the previous and the received seq for $label', ({ seq }) => {
+    expect(detectGap(exampleState, at(seq))).toEqual({ previousSeq: lastEvent.seq, seq });
   });
 });

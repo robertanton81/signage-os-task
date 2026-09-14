@@ -8,8 +8,9 @@ import {
 /**
  * The one write that enforces invariants 1–3: a single-document pipeline update on the `_id`
  * filter (consistency spec, decision 8; processing spec, decision 18). Driver-free: the pipeline is
- * plain objects, and it is mutable because the driver's `findOneAndUpdate` takes a `Document[]`,
- * to which a readonly array is not assignable.
+ * plain objects. It is mutable on purpose: driver 7.6.0 declares the pipeline parameter of
+ * `Collection.findOneAndUpdate` as `Document[] | UpdateFilter<TSchema>` (the plan's Research entry
+ * for `Collection`), and TypeScript never assigns a readonly array to a mutable one.
  */
 export type StateUpdate = {
   filter: { _id: string };
@@ -48,12 +49,15 @@ export function newerThanStoredExpr(path: string, key: OrderKey): Record<string,
  */
 export function buildStateUpdate(message: TelemetryMessage, receivedAt: number): StateUpdate {
   const key: OrderKey = { sessionId: message.sessionId, seq: message.seq };
+  // The payload spreads first and the watermark fields last, so the fields invariant 1 depends on
+  // win by construction; the contract forbids those keys in a payload anyway (shared
+  // `contract.test-d.ts`), and the type check is the second line of defence, not the only one.
   const section = {
+    ...message.payload,
     sessionId: message.sessionId,
     seq: message.seq,
     occurredAt: message.occurredAt,
     receivedAt,
-    ...message.payload,
   };
   const lastEvent = {
     sessionId: message.sessionId,
