@@ -141,6 +141,16 @@ describe('processDelivery', () => {
     ]);
   });
 
+  it('logs the redelivered flag of the delivery as it was given', async () => {
+    const { lines, run } = harness();
+
+    await run(exampleMessages.status, { redelivered: true });
+
+    expect(lines.find((line) => line.msg === 'delivery processed')).toMatchObject({
+      redelivered: true,
+    });
+  });
+
   it('creates the alert of an error diagnostic after the two writes', async () => {
     const { store, run } = harness();
 
@@ -149,6 +159,16 @@ describe('processDelivery', () => {
     expect(methodsOf(store)).toEqual(['insertEvent', 'applyState', 'insertAlert']);
     expect(store.calls[2]).toEqual({ method: 'insertAlert', doc: exampleAlert });
     expect(result).toMatchObject({ verdict: 'ack', alert: 'created' });
+  });
+
+  it('reports the alert as existing when its insert hit the identity already stored', async () => {
+    const { store, run } = harness();
+    store.answer('insertAlert', { outcome: 'duplicate' });
+
+    const result = await run(exampleMessages.diagnostic);
+
+    expect(methodsOf(store)).toEqual(['insertEvent', 'applyState', 'insertAlert']);
+    expect(result).toMatchObject({ verdict: 'ack', alert: 'exists' });
   });
 
   it.each(['info', 'warning'] as const)(
@@ -186,11 +206,10 @@ describe('processDelivery', () => {
   });
 
   it('reports stale at info when the stored section has the same key', async () => {
-    const { lines, run } = harness();
-    const { store } = harness();
+    const { store, lines, run } = harness();
     store.answer('applyState', { outcome: 'ok', before: exampleState });
 
-    const result = await run(exampleMessages.metrics, { store });
+    const result = await run(exampleMessages.metrics);
 
     expect(result).toMatchObject({ verdict: 'ack', outcome: 'stale', duplicate: false });
     expect(lines.find((line) => line.msg === 'delivery processed')).toMatchObject({
@@ -324,10 +343,42 @@ describe('processDelivery', () => {
     expect(store.calls).toEqual([]);
   });
 
-  it('stops at the next check when the signal fires between two writes', async () => {
+  // One case per abort check after a write: before the state write, before the alert insert, and
+  // before the acknowledgement. A check that vanished would let the next write, or the ack, run.
+  it.each<{ after: StoreMethod; message: TelemetryMessage; calls: StoreMethod[] }>([
+    { after: 'insertEvent', message: exampleMessages.status, calls: ['insertEvent'] },
+    {
+      after: 'applyState',
+      message: exampleMessages.diagnostic,
+      calls: ['insertEvent', 'applyState'],
+    },
+    {
+      after: 'insertAlert',
+      message: exampleMessages.diagnostic,
+      calls: ['insertEvent', 'applyState', 'insertAlert'],
+    },
+  ])(
+    'stops at the next check when the signal fires after $after',
+    async ({ after, message, calls }) => {
+      const { store, controller, run } = harness();
+      store.onCall = (call) => {
+        if (call.method === after) {
+          controller.abort();
+        }
+      };
+
+      const result = await run(message);
+
+      expect(result).toEqual({ verdict: 'abandon', cause: 'aborted', attempts: 1 });
+      expect(methodsOf(store)).toEqual(calls);
+    },
+  );
+
+  it('stops before the second state write when the signal fires after a collided first one', async () => {
     const { store, controller, run } = harness();
+    store.answer('applyState', { outcome: 'duplicate' });
     store.onCall = (call) => {
-      if (call.method === 'insertEvent') {
+      if (call.method === 'applyState') {
         controller.abort();
       }
     };
@@ -335,7 +386,7 @@ describe('processDelivery', () => {
     const result = await run(exampleMessages.status);
 
     expect(result).toEqual({ verdict: 'abandon', cause: 'aborted', attempts: 1 });
-    expect(methodsOf(store)).toEqual(['insertEvent']);
+    expect(methodsOf(store)).toEqual(['insertEvent', 'applyState']);
   });
 
   it('abandons as closed when the client was closed under it', async () => {
