@@ -85,15 +85,17 @@ Změněno 2026-09-13 podle `docs/specs/2026-09-13-websocket-transport-design.md`
 
 ## 5. Processing service
 
-- [ ] Konzumace zpráv z RabbitMQ způsobem, který zaručí pořadí v rámci zařízení a rozloží zátěž mezi instance.
-- [ ] Deduplikace podle strategie z kroku 0 – opakovaná zpráva nesmí mít žádný business efekt.
-- [ ] Ukládání zpracovaných eventů do MongoDB.
-- [ ] Aktualizace aktuálního stavu zařízení: atomicky a pouze pokud je zpráva novější než uložený stav.
-- [ ] Idempotentní zpracování čítačů a alertů.
-- [ ] Zpracování chyb: retry, dead-letter pro nezpracovatelné zprávy, potvrzení zprávy až po úspěšném uložení.
-- [ ] Potřebné indexy a unikátní omezení v MongoDB (deduplikace, vyhledání stavu).
-- [ ] Graceful shutdown a health/readiness signál.
-- [ ] Unit testy rozhodovací logiky: novost, deduplikace, atomicita update.
+Hotovo 2026-09-14 podle `docs/specs/2026-09-13-processing-design.md` a `docs/plans/2026-09-13-processing-plan.md` (41 commitů `5cdd8aa..`, 288 testů processing, celkem 855). Skriptovaný běh proti RabbitMQ 4.3 a MongoDB 8.0 prošel všemi dvanácti scénáři; výsledky jsou v hlavičce plánu.
+
+- [x] Konzumace zpráv z RabbitMQ způsobem, který zaručí pořadí v rámci zařízení a rozloží zátěž mezi instance.
+- [x] Deduplikace podle strategie z kroku 0 – opakovaná zpráva nesmí mít žádný business efekt.
+- [x] Ukládání zpracovaných eventů do MongoDB.
+- [x] Aktualizace aktuálního stavu zařízení: atomicky a pouze pokud je zpráva novější než uložený stav.
+- [x] Idempotentní zpracování čítačů a alertů.
+- [x] Zpracování chyb: retry, dead-letter pro nezpracovatelné zprávy, potvrzení zprávy až po úspěšném uložení.
+- [x] Potřebné indexy a unikátní omezení v MongoDB (deduplikace, vyhledání stavu).
+- [x] Graceful shutdown a health/readiness signál.
+- [x] Unit testy rozhodovací logiky: novost, deduplikace, atomicita update.
 
 ## 6. Docker Compose (vývojový)
 
