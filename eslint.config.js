@@ -7,7 +7,15 @@ import tseslint from 'typescript-eslint';
 export default defineConfig([
   // `.local/` is the gitignored scratch directory (CLAUDE.md, "Local scratch"): study notes,
   // throwaway probes, downloaded reference material. None of it ships, so none of it is linted.
-  globalIgnores(['**/dist/**', '**/node_modules/**', '**/coverage/**', '.local/**']),
+  // `.claude/worktrees/` holds git worktrees a Claude Code session opens for isolated work; each
+  // is a whole checkout with its own tooling, outside the root TypeScript projects.
+  globalIgnores([
+    '**/dist/**',
+    '**/node_modules/**',
+    '**/coverage/**',
+    '.local/**',
+    '.claude/worktrees/**',
+  ]),
   {
     files: ['**/*.{js,mjs,cjs}'],
     extends: [js.configs.recommended],
