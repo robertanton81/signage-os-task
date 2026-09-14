@@ -9,7 +9,12 @@ import {
 import type { ConsumeMessage } from 'amqplib';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AMQP_CLOSE_TIMEOUT_MS, AmqpConsumer } from './consumer.js';
+import {
+  AMQP_CLOSE_TIMEOUT_MS,
+  AMQP_SETUP_TIMEOUT_MS,
+  AmqpConsumer,
+  LINK_BACKOFF_BASE_MS,
+} from './consumer.js';
 import type { StoreFailure } from './failure.js';
 import { EXAMPLE_RECEIVED_AT, exampleMessages } from './fixtures.js';
 import type { StoreWatcher } from './store.js';
@@ -17,7 +22,8 @@ import { TestStore } from './test-store.js';
 
 /**
  * The consumer against a broker that stops answering after the link is open: `stop()` while the
- * `basic.consume` reply is still pending, and `stop()` while the cancel reply is. A real broker
+ * `basic.consume` reply is still pending, `stop()` while the cancel reply is, and a `basic.consume`
+ * reply that never arrives at all. A real broker
  * cannot be asked to withhold one reply, and a TCP stand-in would have to speak the whole AMQP
  * handshake before it could stay silent, so these tests replace the amqplib module with a fake
  * that answers every call except the ones a test holds back. The store is the in-memory port of
@@ -278,10 +284,14 @@ async function consumerStoppedWithoutAnyAnswer(): Promise<{
 describe('AmqpConsumer against a broker that stops answering', () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    // Every backoff delay (the link's and a handler's) is half its ceiling, never a draw near zero
+    // that would let a reconnect finish inside the same clock advance as the link's end.
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
     broker.reset();
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -364,6 +374,8 @@ describe('AmqpConsumer against a broker that stops answering', () => {
     const { consumer, store, lines } = await registeredConsumer({ transientAttempts: RETRIES + 1 });
     // Every event insert fails transiently: the handler retries with a backoff sleep on the
     // registration's signal, so it stays in flight, asleep or between two attempts, until aborted.
+    // With the pinned draw its first sleep is 100 ms, the same as the drain budget; the assertions
+    // below hold whichever of the two ends first, because they count neither attempts nor sleeps.
     for (let i = 0; i < RETRIES; i += 1) {
       store.answer('insertEvent', { outcome: 'fail', failure: NETWORK_FAILURE });
     }
@@ -391,5 +403,49 @@ describe('AmqpConsumer against a broker that stops answering', () => {
     // Nothing was acknowledged through the void registration: the broker requeues the delivery.
     expect(broker.calls).toEqual(['consume', 'cancel', 'close']);
     expect(consumer.state.name).toBe('stopped');
+  });
+
+  it('ends the link and reconnects when the consume reply does not arrive within the setup budget', async () => {
+    const { consumer, store, lines } = await consumerWithPendingRegistration();
+    const { generation } = consumer.state;
+
+    await vi.advanceTimersByTimeAsync(AMQP_SETUP_TIMEOUT_MS - 1);
+    expect(consumer.state).toMatchObject({ name: 'open', consumer: 'registering' });
+    await vi.advanceTimersByTimeAsync(1 + IMMEDIATE_MS);
+    expect(messages(lines)).toContain('consume timed out');
+    expect(consumer.state.name).toBe('backoff');
+    expect(consumer.stats().registered).toBe(false);
+    expect(broker.calls).toEqual(['consume', 'close']);
+    // The link was open for the whole setup budget, which is the reset threshold: attempt 0.
+    expect(lines.find((line) => line.msg === 'consumer reconnect scheduled')).toMatchObject({
+      reason: 'consume_timed_out',
+      attempt: 0,
+    });
+
+    // A delivery that reaches the void registration is not taken: nothing could acknowledge it.
+    consumeCall(0).callback(delivery(exampleMessages.status, 1));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(consumer.stats()).toMatchObject({ received: 0, inFlight: 0 });
+    expect(store.calls).toEqual([]);
+    // The late reply changes nothing either.
+    consumeCall(0).reply.resolve({ consumerTag: 'late' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(messages(lines)).not.toContain('consumer registered');
+    expect(consumer.state.name).toBe('backoff');
+
+    // The backoff elapses (attempt 0: at most the base delay), a new link opens and registers again.
+    broker.consumeIssued = Promise.withResolvers<void>();
+    await vi.advanceTimersByTimeAsync(LINK_BACKOFF_BASE_MS + IMMEDIATE_MS);
+    await broker.consumeIssued.promise;
+    expect(broker.calls).toEqual(['consume', 'close', 'consume']);
+    expect(consumer.state).toMatchObject({ name: 'open', consumer: 'registering' });
+    expect(consumer.state.generation).toBeGreaterThan(generation);
+
+    let stopped = false;
+    void consumer.stop().then(() => {
+      stopped = true;
+    });
+    await vi.advanceTimersByTimeAsync(SHUTDOWN_TIMEOUT_MS + IMMEDIATE_MS);
+    expect(stopped).toBe(true);
   });
 });

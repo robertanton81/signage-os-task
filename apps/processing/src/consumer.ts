@@ -69,7 +69,7 @@ export type AmqpConsumerOptions = {
  * end of the AMQP handshake, and disarms it once the connection is open (`lib/connect.js`, v2.0.1).
  */
 export const AMQP_CONNECT_TIMEOUT_MS = 10_000;
-/** One budget for opening the channel, declaring the topology and setting the prefetch. */
+/** One budget for opening the channel, declaring the topology and setting the prefetch, and one for the consume reply. */
 export const AMQP_SETUP_TIMEOUT_MS = 10_000;
 /** Bounds the close of a connection, and the cancel of a consumer (decisions 12 and 20). */
 export const AMQP_CLOSE_TIMEOUT_MS = 2_000;
@@ -539,7 +539,10 @@ export class AmqpConsumer {
     this.#dispatch({ type: 'link_closed', generation: handle.generation, reason, now: Date.now() });
   }
 
-  /** The `consume` effect: one registration on the current link (decision 7). */
+  /**
+   * The `consume` effect: one registration on the current link (decision 7), its reply bounded
+   * like every other broker call.
+   */
   async #consume(generation: number): Promise<void> {
     const link = this.#link;
     if (link === undefined || link.handle.generation !== generation) {
@@ -558,22 +561,35 @@ export class AmqpConsumer {
       live: true,
     };
     this.#registration = registration;
-    let consumerTag: string;
-    try {
-      const reply = await link.channel.consume(
+    const reply = await settleWithin(
+      link.channel.consume(
         TELEMETRY_QUEUE,
         (message) => {
           this.#onMessage(registration, message);
         },
         { noAck: false },
-      );
-      consumerTag = reply.consumerTag;
-    } catch (error) {
+      ),
+      AMQP_SETUP_TIMEOUT_MS,
+    );
+    if (reply.outcome === 'rejected') {
       // amqplib rejects an RPC only on a broken channel: its close is the real event.
       registration.live = false;
-      this.#logger.debug({ err: error, generation }, 'consume failed');
+      this.#logger.debug({ err: reply.error, generation }, 'consume failed');
       return;
     }
+    if (reply.outcome === 'timed_out') {
+      // A reply that never comes ends the link the way a setup that ran out of budget does: the
+      // machine backs off and reconnects at once, the model is closed with nobody waiting, and a
+      // delivery that still reaches this registration is ignored (`#onMessage`), because nothing
+      // may be acknowledged through it. The model's own close event is the second end of the
+      // same handle, which `#onLinkEnded` ignores.
+      registration.live = false;
+      this.#logger.warn({ generation, timeoutMs: AMQP_SETUP_TIMEOUT_MS }, 'consume timed out');
+      this.#onLinkEnded({ handle: link.handle, reason: 'consume_timed_out' });
+      void this.#closeHandle(link.handle);
+      return;
+    }
+    const { consumerTag } = reply.value;
     registration.consumerTag = consumerTag;
     if (!registration.live) {
       return;
@@ -594,6 +610,12 @@ export class AmqpConsumer {
       registration.live = false;
       this.#logger.info({ generation }, 'consumer cancelled');
       this.#dispatch({ type: 'broker_cancelled', generation });
+      return;
+    }
+    if (!registration.live) {
+      // A delivery on a void registration (a `consume` reply that came after its budget) is left
+      // alone: nothing may be acknowledged through the registration, and the broker requeues the
+      // delivery when the link closes.
       return;
     }
     registration.held.set(message.fields.deliveryTag, message);
