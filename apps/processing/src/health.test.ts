@@ -27,6 +27,17 @@ const VARIANTS: { label: string; state: (storeReady: boolean) => ConsumerState }
     }),
   },
   {
+    label: 'open/registering',
+    state: (storeReady) => ({
+      name: 'open',
+      consumer: 'registering',
+      attempt: 0,
+      openedAt: 0,
+      generation: G,
+      storeReady,
+    }),
+  },
+  {
     label: 'open/active',
     state: (storeReady) => ({
       name: 'open',

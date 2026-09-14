@@ -7,20 +7,29 @@ import {
   transition,
   type ConsumerEvent,
   type ConsumerState,
+  type ConsumerStatus,
   type Effect,
 } from './consumer-state.js';
 
 const G = 4;
 const OPENED_AT = 1_000;
+const ATTEMPT = 2;
 
-function backoff(storeReady: boolean, attempt = 2): ConsumerState {
+function backoff(storeReady: boolean, attempt = ATTEMPT): ConsumerState {
   return { name: 'backoff', attempt, generation: G, storeReady };
 }
-function connecting(storeReady: boolean, attempt = 2): ConsumerState {
-  return { name: 'connecting', attempt, generation: G, storeReady };
+function connecting(storeReady: boolean): ConsumerState {
+  return { name: 'connecting', attempt: ATTEMPT, generation: G, storeReady };
 }
-function open(consumer: 'idle' | 'active', storeReady: boolean): ConsumerState {
-  return { name: 'open', consumer, attempt: 2, openedAt: OPENED_AT, generation: G, storeReady };
+function open(consumer: ConsumerStatus, storeReady: boolean): ConsumerState {
+  return {
+    name: 'open',
+    consumer,
+    attempt: ATTEMPT,
+    openedAt: OPENED_AT,
+    generation: G,
+    storeReady,
+  };
 }
 function draining(storeReady: boolean): ConsumerState {
   return { name: 'draining', generation: G, storeReady };
@@ -30,20 +39,18 @@ function stopped(storeReady: boolean): ConsumerState {
 }
 
 /** Every variant the machine distinguishes, with both values of the store flag. */
-const VARIANTS: { label: string; state: ConsumerState }[] = [
-  { label: 'backoff (store not ready)', state: backoff(false) },
-  { label: 'backoff (store ready)', state: backoff(true) },
-  { label: 'connecting (store not ready)', state: connecting(false) },
-  { label: 'connecting (store ready)', state: connecting(true) },
-  { label: 'open/idle (store not ready)', state: open('idle', false) },
-  { label: 'open/idle (store ready)', state: open('idle', true) },
-  { label: 'open/active (store not ready)', state: open('active', false) },
-  { label: 'open/active (store ready)', state: open('active', true) },
-  { label: 'draining (store not ready)', state: draining(false) },
-  { label: 'draining (store ready)', state: draining(true) },
-  { label: 'stopped (store not ready)', state: stopped(false) },
-  { label: 'stopped (store ready)', state: stopped(true) },
-];
+const VARIANTS: { label: string; state: ConsumerState }[] = [false, true].flatMap((ready) => {
+  const flag = ready ? 'store ready' : 'store not ready';
+  return [
+    { label: `backoff (${flag})`, state: backoff(ready) },
+    { label: `connecting (${flag})`, state: connecting(ready) },
+    { label: `open/idle (${flag})`, state: open('idle', ready) },
+    { label: `open/registering (${flag})`, state: open('registering', ready) },
+    { label: `open/active (${flag})`, state: open('active', ready) },
+    { label: `draining (${flag})`, state: draining(ready) },
+    { label: `stopped (${flag})`, state: stopped(ready) },
+  ];
+});
 
 const NOW = 5_000;
 
@@ -59,9 +66,16 @@ function generationEvents(generation: number): ConsumerEvent[] {
   ];
 }
 
-const STORE_EVENTS: ConsumerEvent[] = [{ type: 'store_ready' }, { type: 'store_unavailable' }];
+const BACKOFF_ELAPSED: ConsumerEvent = { type: 'backoff_elapsed', generation: G };
+const LINK_OPENED: ConsumerEvent = { type: 'link_opened', generation: G, now: NOW };
+const LINK_FAILED: ConsumerEvent = { type: 'link_failed', generation: G, reason: 'connect_failed' };
+const REGISTERED: ConsumerEvent = { type: 'consumer_registered', generation: G };
+const BROKER_CANCELLED: ConsumerEvent = { type: 'broker_cancelled', generation: G };
+const DRAINED: ConsumerEvent = { type: 'drained', generation: G };
+const STORE_READY: ConsumerEvent = { type: 'store_ready' };
+const STORE_UNAVAILABLE: ConsumerEvent = { type: 'store_unavailable' };
 const STOP: ConsumerEvent = { type: 'stop' };
-const ALL_EVENTS: ConsumerEvent[] = [...generationEvents(G), ...STORE_EVENTS, STOP];
+const ALL_EVENTS: ConsumerEvent[] = [...generationEvents(G), STORE_READY, STORE_UNAVAILABLE, STOP];
 
 const linkClosed = (now: number): ConsumerEvent => ({
   type: 'link_closed',
@@ -69,271 +83,372 @@ const linkClosed = (now: number): ConsumerEvent => ({
   reason: 'connection_closed',
   now,
 });
+/** A close before the reset window: the attempt grows. */
+const EARLY_CLOSE = linkClosed(OPENED_AT + LINK_RESET_AFTER_MS - 1);
+
+const WATCH: Effect[] = [{ kind: 'watch_store' }];
+const CONSUME: Effect[] = [{ kind: 'consume' }];
+const PAUSE: Effect[] = [
+  { kind: 'cancel_consumer' },
+  { kind: 'abort_handlers' },
+  { kind: 'return_held' },
+  { kind: 'watch_store' },
+];
+const RECYCLE: Effect[] = [
+  { kind: 'abort_handlers' },
+  { kind: 'schedule_backoff', attempt: ATTEMPT + 1, reason: 'connection_closed' },
+];
 
 type Row = {
   label: string;
   state: ConsumerState;
   event: ConsumerEvent;
   next: ConsumerState;
-  effects: Effect[];
+  effects?: Effect[];
 };
 
-/** The spec's table, one row per state variant it applies to (processing spec, decision 5). */
+const BOTH = [false, true] as const;
+const flag = (ready: boolean): string => (ready ? 'store ready' : 'store not ready');
+
+/**
+ * The spec's table (processing spec, decision 5), one row per state variant and store flag it
+ * applies to. Every pair not listed here is asserted unchanged by the sweep below.
+ */
 const ROWS: Row[] = [
+  // backoff
+  ...BOTH.map((ready) => ({
+    label: `backoff (${flag(ready)}) + backoff_elapsed opens the next link`,
+    state: backoff(ready),
+    event: BACKOFF_ELAPSED,
+    next: { name: 'connecting', attempt: ATTEMPT, generation: G + 1, storeReady: ready } as const,
+    effects: [{ kind: 'open_link' }] as Effect[],
+  })),
   {
-    label: 'backoff + backoff_elapsed opens a link on the next generation',
-    state: backoff(false),
-    event: { type: 'backoff_elapsed', generation: G },
-    next: { name: 'connecting', attempt: 2, generation: G + 1, storeReady: false },
-    effects: [{ kind: 'open_link' }],
-  },
-  {
-    label: 'backoff + backoff_elapsed keeps the store flag',
+    label: 'backoff + store_unavailable watches when the store was ready',
     state: backoff(true),
-    event: { type: 'backoff_elapsed', generation: G },
-    next: { name: 'connecting', attempt: 2, generation: G + 1, storeReady: true },
-    effects: [{ kind: 'open_link' }],
+    event: STORE_UNAVAILABLE,
+    next: backoff(false),
+    effects: WATCH,
   },
   {
-    label: 'connecting + link_opened consumes when the store is ready',
+    label: 'backoff + store_unavailable changes nothing when it was not',
+    state: backoff(false),
+    event: STORE_UNAVAILABLE,
+    next: backoff(false),
+  },
+  {
+    label: 'backoff + store_ready sets the flag',
+    state: backoff(false),
+    event: STORE_READY,
+    next: backoff(true),
+  },
+  {
+    label: 'backoff + store_ready while ready changes nothing',
+    state: backoff(true),
+    event: STORE_READY,
+    next: backoff(true),
+  },
+  ...BOTH.map((ready) => ({
+    label: `backoff (${flag(ready)}) + stop stops at once`,
+    state: backoff(ready),
+    event: STOP,
+    next: stopped(ready),
+  })),
+  // connecting
+  {
+    label: 'connecting + link_opened registers when the store is ready',
     state: connecting(true),
-    event: { type: 'link_opened', generation: G, now: NOW },
+    event: LINK_OPENED,
     next: {
       name: 'open',
-      consumer: 'idle',
-      attempt: 2,
+      consumer: 'registering',
+      attempt: ATTEMPT,
       openedAt: NOW,
       generation: G,
       storeReady: true,
     },
-    effects: [{ kind: 'consume' }],
+    effects: CONSUME,
   },
   {
-    label: 'connecting + link_opened waits for the store when it is not ready',
+    label: 'connecting + link_opened waits idle when the store is not ready',
     state: connecting(false),
-    event: { type: 'link_opened', generation: G, now: NOW },
+    event: LINK_OPENED,
     next: {
       name: 'open',
       consumer: 'idle',
-      attempt: 2,
+      attempt: ATTEMPT,
       openedAt: NOW,
       generation: G,
       storeReady: false,
     },
-    effects: [],
   },
+  ...BOTH.map((ready) => ({
+    label: `connecting (${flag(ready)}) + link_failed backs off with the next attempt`,
+    state: connecting(ready),
+    event: LINK_FAILED,
+    next: backoff(ready, ATTEMPT + 1),
+    effects: [
+      { kind: 'schedule_backoff', attempt: ATTEMPT + 1, reason: 'connect_failed' },
+    ] as Effect[],
+  })),
   {
-    label: 'connecting + link_failed backs off with the next attempt',
+    label: 'connecting + store_unavailable watches when the store was ready',
     state: connecting(true),
-    event: { type: 'link_failed', generation: G, reason: 'connect_failed' },
-    next: backoff(true, 3),
-    effects: [{ kind: 'schedule_backoff', attempt: 3, reason: 'connect_failed' }],
+    event: STORE_UNAVAILABLE,
+    next: connecting(false),
+    effects: WATCH,
   },
   {
-    label: 'open/idle + link_closed aborts the handlers and backs off',
+    label: 'connecting + store_unavailable changes nothing when it was not',
+    state: connecting(false),
+    event: STORE_UNAVAILABLE,
+    next: connecting(false),
+  },
+  {
+    label: 'connecting + store_ready sets the flag without consuming',
+    state: connecting(false),
+    event: STORE_READY,
+    next: connecting(true),
+  },
+  {
+    label: 'connecting + store_ready while ready changes nothing',
+    state: connecting(true),
+    event: STORE_READY,
+    next: connecting(true),
+  },
+  ...BOTH.map((ready) => ({
+    label: `connecting (${flag(ready)}) + stop stops and closes what the attempt opened`,
+    state: connecting(ready),
+    event: STOP,
+    next: stopped(ready),
+    effects: [{ kind: 'close_link' }] as Effect[],
+  })),
+  // open/idle
+  ...BOTH.map((ready) => ({
+    label: `open/idle (${flag(ready)}) + link_closed recycles`,
+    state: open('idle', ready),
+    event: EARLY_CLOSE,
+    next: backoff(ready, ATTEMPT + 1),
+    effects: RECYCLE,
+  })),
+  {
+    label: 'open/idle + store_ready registers',
+    state: open('idle', false),
+    event: STORE_READY,
+    next: open('registering', true),
+    effects: CONSUME,
+  },
+  {
+    label: 'open/idle + store_ready while ready changes nothing',
     state: open('idle', true),
-    event: linkClosed(OPENED_AT + LINK_RESET_AFTER_MS - 1),
-    next: backoff(true, 3),
-    effects: [
-      { kind: 'abort_handlers' },
-      { kind: 'schedule_backoff', attempt: 3, reason: 'connection_closed' },
-    ],
-  },
-  {
-    label: 'open/active + link_closed after a long open link resets the attempt',
-    state: open('active', true),
-    event: linkClosed(OPENED_AT + LINK_RESET_AFTER_MS),
-    next: backoff(true, 0),
-    effects: [
-      { kind: 'abort_handlers' },
-      { kind: 'schedule_backoff', attempt: 0, reason: 'connection_closed' },
-    ],
-  },
-  {
-    label: 'open/idle + consumer_registered becomes active',
-    state: open('idle', true),
-    event: { type: 'consumer_registered', generation: G },
-    next: open('active', true),
-    effects: [],
-  },
-  {
-    label: 'open/active + broker_cancelled aborts and consumes again',
-    state: open('active', true),
-    event: { type: 'broker_cancelled', generation: G },
+    event: STORE_READY,
     next: open('idle', true),
+  },
+  {
+    label: 'open/idle + store_unavailable watches when the store was ready',
+    state: open('idle', true),
+    event: STORE_UNAVAILABLE,
+    next: open('idle', false),
+    effects: WATCH,
+  },
+  {
+    label: 'open/idle + store_unavailable changes nothing when already paused',
+    state: open('idle', false),
+    event: STORE_UNAVAILABLE,
+    next: open('idle', false),
+  },
+  ...BOTH.map((ready) => ({
+    label: `open/idle (${flag(ready)}) + stop drains with nothing to cancel`,
+    state: open('idle', ready),
+    event: STOP,
+    next: draining(ready),
+  })),
+  // open/registering
+  {
+    label: 'open/registering + consumer_registered becomes active while the store is ready',
+    state: open('registering', true),
+    event: REGISTERED,
+    next: open('active', true),
+  },
+  {
+    label: 'open/registering + consumer_registered keeps the openedAt the link was opened with',
+    state: {
+      name: 'open',
+      consumer: 'registering',
+      attempt: ATTEMPT,
+      openedAt: 2_222,
+      generation: G,
+      storeReady: true,
+    },
+    event: REGISTERED,
+    next: {
+      name: 'open',
+      consumer: 'active',
+      attempt: ATTEMPT,
+      openedAt: 2_222,
+      generation: G,
+      storeReady: true,
+    },
+  },
+  {
+    label:
+      'open/registering + consumer_registered is cancelled and returned when the store went away',
+    state: open('registering', false),
+    event: REGISTERED,
+    next: open('idle', false),
+    effects: [{ kind: 'cancel_consumer' }, { kind: 'abort_handlers' }, { kind: 'return_held' }],
+  },
+  {
+    label: 'open/registering + store_unavailable watches and keeps the registration pending',
+    state: open('registering', true),
+    event: STORE_UNAVAILABLE,
+    next: open('registering', false),
+    effects: WATCH,
+  },
+  {
+    label: 'open/registering + store_unavailable changes nothing when already paused',
+    state: open('registering', false),
+    event: STORE_UNAVAILABLE,
+    next: open('registering', false),
+  },
+  {
+    label: 'open/registering + store_ready issues no second consume',
+    state: open('registering', false),
+    event: STORE_READY,
+    next: open('registering', true),
+  },
+  {
+    label: 'open/registering + store_ready while ready changes nothing',
+    state: open('registering', true),
+    event: STORE_READY,
+    next: open('registering', true),
+  },
+  ...BOTH.map((ready) => ({
+    label: `open/registering (${flag(ready)}) + link_closed recycles`,
+    state: open('registering', ready),
+    event: EARLY_CLOSE,
+    next: backoff(ready, ATTEMPT + 1),
+    effects: RECYCLE,
+  })),
+  ...BOTH.map((ready) => ({
+    label: `open/registering (${flag(ready)}) + stop drains; the late registration is cancelled there`,
+    state: open('registering', ready),
+    event: STOP,
+    next: draining(ready),
+  })),
+  // open/active
+  {
+    label: 'open/active + broker_cancelled aborts and registers again',
+    state: open('active', true),
+    event: BROKER_CANCELLED,
+    next: open('registering', true),
     effects: [{ kind: 'abort_handlers' }, { kind: 'consume' }],
   },
   {
     label: 'open/active + broker_cancelled without a ready store only aborts',
     state: open('active', false),
-    event: { type: 'broker_cancelled', generation: G },
+    event: BROKER_CANCELLED,
     next: open('idle', false),
     effects: [{ kind: 'abort_handlers' }],
   },
+  ...BOTH.map((ready) => ({
+    label: `open/active (${flag(ready)}) + store_unavailable runs the pause sequence`,
+    state: open('active', ready),
+    event: STORE_UNAVAILABLE,
+    next: open('idle', false),
+    effects: PAUSE,
+  })),
   {
-    label: 'open/active + store_unavailable runs the pause sequence',
+    label: 'open/active + store_ready while ready changes nothing',
     state: open('active', true),
-    event: { type: 'store_unavailable' },
-    next: open('idle', false),
-    effects: [
-      { kind: 'cancel_consumer' },
-      { kind: 'abort_handlers' },
-      { kind: 'return_held' },
-      { kind: 'watch_store' },
-    ],
-  },
-  {
-    label: 'backoff + store_unavailable starts a watch when the store was ready',
-    state: backoff(true),
-    event: { type: 'store_unavailable' },
-    next: backoff(false),
-    effects: [{ kind: 'watch_store' }],
-  },
-  {
-    label: 'backoff + store_unavailable changes nothing when the store was not ready',
-    state: backoff(false),
-    event: { type: 'store_unavailable' },
-    next: backoff(false),
-    effects: [],
-  },
-  {
-    label: 'connecting + store_unavailable starts a watch when the store was ready',
-    state: connecting(true),
-    event: { type: 'store_unavailable' },
-    next: connecting(false),
-    effects: [{ kind: 'watch_store' }],
-  },
-  {
-    label: 'open/idle + store_unavailable starts a watch when the store was ready',
-    state: open('idle', true),
-    event: { type: 'store_unavailable' },
-    next: open('idle', false),
-    effects: [{ kind: 'watch_store' }],
-  },
-  {
-    label: 'open/idle + store_unavailable changes nothing when already paused',
-    state: open('idle', false),
-    event: { type: 'store_unavailable' },
-    next: open('idle', false),
-    effects: [],
-  },
-  {
-    label: 'backoff + store_ready sets the flag',
-    state: backoff(false),
-    event: { type: 'store_ready' },
-    next: backoff(true),
-    effects: [],
-  },
-  {
-    label: 'connecting + store_ready sets the flag without consuming',
-    state: connecting(false),
-    event: { type: 'store_ready' },
-    next: connecting(true),
-    effects: [],
-  },
-  {
-    label: 'open/idle + store_ready consumes',
-    state: open('idle', false),
-    event: { type: 'store_ready' },
-    next: open('idle', true),
-    effects: [{ kind: 'consume' }],
-  },
-  {
-    label: 'open/idle + store_ready while already ready does not consume twice',
-    state: open('idle', true),
-    event: { type: 'store_ready' },
-    next: open('idle', true),
-    effects: [],
-  },
-  {
-    label: 'open/active + store_ready changes nothing',
-    state: open('active', true),
-    event: { type: 'store_ready' },
+    event: STORE_READY,
     next: open('active', true),
-    effects: [],
   },
   {
-    label: 'open/active + stop drains after cancelling the consumer',
-    state: open('active', true),
+    label: 'open/active + store_ready sets the flag',
+    state: open('active', false),
+    event: STORE_READY,
+    next: open('active', true),
+  },
+  ...BOTH.map((ready) => ({
+    label: `open/active (${flag(ready)}) + link_closed recycles`,
+    state: open('active', ready),
+    event: EARLY_CLOSE,
+    next: backoff(ready, ATTEMPT + 1),
+    effects: RECYCLE,
+  })),
+  ...BOTH.map((ready) => ({
+    label: `open/active (${flag(ready)}) + stop cancels and drains`,
+    state: open('active', ready),
     event: STOP,
-    next: draining(true),
-    effects: [{ kind: 'cancel_consumer' }],
-  },
-  {
-    label: 'open/idle + stop drains with nothing to cancel',
-    state: open('idle', true),
-    event: STOP,
-    next: draining(true),
-    effects: [],
-  },
-  {
-    label: 'backoff + stop stops at once',
-    state: backoff(true),
-    event: STOP,
-    next: stopped(true),
-    effects: [],
-  },
-  {
-    label: 'connecting + stop stops and closes what the attempt opened',
-    state: connecting(false),
-    event: STOP,
-    next: stopped(false),
-    effects: [{ kind: 'close_link' }],
-  },
-  {
-    label: 'draining + drained aborts the rest and closes the link',
-    state: draining(true),
-    event: { type: 'drained', generation: G },
-    next: stopped(true),
-    effects: [{ kind: 'abort_handlers' }, { kind: 'close_link' }],
-  },
-  {
-    label: 'draining + link_closed stops without a close',
-    state: draining(true),
+    next: draining(ready),
+    effects: [{ kind: 'cancel_consumer' }] as Effect[],
+  })),
+  // draining
+  ...BOTH.map((ready) => ({
+    label: `draining (${flag(ready)}) + drained aborts the rest and closes the link`,
+    state: draining(ready),
+    event: DRAINED,
+    next: stopped(ready),
+    effects: [{ kind: 'abort_handlers' }, { kind: 'close_link' }] as Effect[],
+  })),
+  ...BOTH.map((ready) => ({
+    label: `draining (${flag(ready)}) + link_closed stops without a close`,
+    state: draining(ready),
     event: linkClosed(NOW),
-    next: stopped(true),
-    effects: [{ kind: 'abort_handlers' }],
-  },
-  {
-    label: 'draining + broker_cancelled aborts the handlers',
-    state: draining(true),
-    event: { type: 'broker_cancelled', generation: G },
-    next: draining(true),
-    effects: [{ kind: 'abort_handlers' }],
-  },
-  {
-    label: 'draining + consumer_registered cancels the late registration',
-    state: draining(true),
-    event: { type: 'consumer_registered', generation: G },
-    next: draining(true),
-    effects: [{ kind: 'cancel_consumer' }],
-  },
+    next: stopped(ready),
+    effects: [{ kind: 'abort_handlers' }] as Effect[],
+  })),
+  ...BOTH.map((ready) => ({
+    label: `draining (${flag(ready)}) + broker_cancelled aborts the handlers`,
+    state: draining(ready),
+    event: BROKER_CANCELLED,
+    next: draining(ready),
+    effects: [{ kind: 'abort_handlers' }] as Effect[],
+  })),
+  ...BOTH.map((ready) => ({
+    label: `draining (${flag(ready)}) + consumer_registered cancels the late registration`,
+    state: draining(ready),
+    event: REGISTERED,
+    next: draining(ready),
+    effects: [{ kind: 'cancel_consumer' }] as Effect[],
+  })),
   {
     label: 'draining + store_unavailable only updates the flag',
     state: draining(true),
-    event: { type: 'store_unavailable' },
+    event: STORE_UNAVAILABLE,
     next: draining(false),
-    effects: [],
+  },
+  {
+    label: 'draining + store_unavailable while paused changes nothing',
+    state: draining(false),
+    event: STORE_UNAVAILABLE,
+    next: draining(false),
   },
   {
     label: 'draining + store_ready only updates the flag',
     state: draining(false),
-    event: { type: 'store_ready' },
+    event: STORE_READY,
     next: draining(true),
-    effects: [],
+  },
+  {
+    label: 'draining + store_ready while ready changes nothing',
+    state: draining(true),
+    event: STORE_READY,
+    next: draining(true),
   },
 ];
 
 function pairKey(state: ConsumerState, event: ConsumerEvent): string {
   const consumer = state.name === 'open' ? state.consumer : '-';
-  return `${state.name}/${consumer}/${event.type}`;
+  return `${state.name}/${consumer}/${String(state.storeReady)}/${event.type}`;
 }
 
-/** The (state, consumer, event) triples the table above has a row for. */
-const COVERED = new Set(ROWS.map((row) => pairKey(row.state, row.event)));
+/** The (state, consumer, store flag, event) tuples the table above has a row for. */
+const COVERED = new Set(ROWS.map((entry) => pairKey(entry.state, entry.event)));
 
 describe('transition', () => {
-  it.each(ROWS)('$label', ({ state, event, next, effects }) => {
+  it.each(ROWS)('$label', ({ state, event, next, effects = [] }) => {
     expect(transition(state, event)).toEqual({ state: next, effects });
   });
 
@@ -344,56 +459,87 @@ describe('transition', () => {
     });
   });
 
-  it('runs the pause once, ignores a second report, and consumes again when the store is back', () => {
-    const paused = transition(open('active', true), { type: 'store_unavailable' });
-    expect(paused.effects).toEqual([
-      { kind: 'cancel_consumer' },
-      { kind: 'abort_handlers' },
-      { kind: 'return_held' },
-      { kind: 'watch_store' },
-    ]);
-    expect(paused.state).toEqual(open('idle', false));
+  it('runs the pause once, ignores a second report, and registers again when the store is back', () => {
+    const paused = transition(open('active', true), STORE_UNAVAILABLE);
+    expect(paused).toEqual({ state: open('idle', false), effects: PAUSE });
 
-    const again = transition(paused.state, { type: 'store_unavailable' });
+    const again = transition(paused.state, STORE_UNAVAILABLE);
     expect(again).toEqual({ state: paused.state, effects: [] });
 
-    const resumed = transition(again.state, { type: 'store_ready' });
-    expect(resumed).toEqual({ state: open('idle', true), effects: [{ kind: 'consume' }] });
+    const resumed = transition(again.state, STORE_READY);
+    expect(resumed).toEqual({ state: open('registering', true), effects: CONSUME });
+
+    expect(transition(resumed.state, REGISTERED)).toEqual({
+      state: open('active', true),
+      effects: [],
+    });
   });
 
   it('re-registers on the same link after a broker cancel', () => {
-    const cancelled = transition(open('active', true), { type: 'broker_cancelled', generation: G });
+    const cancelled = transition(open('active', true), BROKER_CANCELLED);
     expect(cancelled).toEqual({
-      state: open('idle', true),
+      state: open('registering', true),
       effects: [{ kind: 'abort_handlers' }, { kind: 'consume' }],
     });
 
-    const registered = transition(cancelled.state, { type: 'consumer_registered', generation: G });
-    expect(registered).toEqual({ state: open('active', true), effects: [] });
+    expect(transition(cancelled.state, REGISTERED)).toEqual({
+      state: open('active', true),
+      effects: [],
+    });
+  });
+
+  it('cancels and returns a registration that lands after the store went away, then registers again', () => {
+    const outage = transition(open('registering', true), STORE_UNAVAILABLE);
+    expect(outage).toEqual({ state: open('registering', false), effects: WATCH });
+
+    const landed = transition(outage.state, REGISTERED);
+    expect(landed).toEqual({
+      state: open('idle', false),
+      effects: [{ kind: 'cancel_consumer' }, { kind: 'abort_handlers' }, { kind: 'return_held' }],
+    });
+
+    const back = transition(landed.state, STORE_READY);
+    expect(back).toEqual({ state: open('registering', true), effects: CONSUME });
+    expect(transition(back.state, REGISTERED)).toEqual({
+      state: open('active', true),
+      effects: [],
+    });
+  });
+
+  it('issues no second consume when the store comes back while a registration is pending', () => {
+    const outage = transition(open('registering', true), STORE_UNAVAILABLE);
+    const back = transition(outage.state, STORE_READY);
+    expect(back).toEqual({ state: open('registering', true), effects: [] });
+
+    expect(transition(back.state, REGISTERED)).toEqual({
+      state: open('active', true),
+      effects: [],
+    });
   });
 
   it('drains in two phases: cancel on stop, abort and close on drained', () => {
     const drainingNow = transition(open('active', true), STOP);
     expect(drainingNow).toEqual({ state: draining(true), effects: [{ kind: 'cancel_consumer' }] });
 
-    const done = transition(drainingNow.state, { type: 'drained', generation: G });
+    const done = transition(drainingNow.state, DRAINED);
     expect(done).toEqual({
       state: stopped(true),
       effects: [{ kind: 'abort_handlers' }, { kind: 'close_link' }],
     });
-
-    expect(transition(open('idle', true), STOP)).toEqual({ state: draining(true), effects: [] });
   });
 
   it('resets the attempt only after the link stayed open for LINK_RESET_AFTER_MS', () => {
     const reset = transition(open('active', true), linkClosed(OPENED_AT + LINK_RESET_AFTER_MS));
-    const notYet = transition(
-      open('active', true),
-      linkClosed(OPENED_AT + LINK_RESET_AFTER_MS - 1),
-    );
+    const notYet = transition(open('active', true), EARLY_CLOSE);
 
-    expect(reset.state).toMatchObject({ name: 'backoff', attempt: 0 });
-    expect(notYet.state).toMatchObject({ name: 'backoff', attempt: 3 });
+    expect(reset).toEqual({
+      state: backoff(true, 0),
+      effects: [
+        { kind: 'abort_handlers' },
+        { kind: 'schedule_backoff', attempt: 0, reason: 'connection_closed' },
+      ],
+    });
+    expect(notYet.state).toEqual(backoff(true, ATTEMPT + 1));
   });
 
   it.each(VARIANTS)('ignores every event of another generation in $label', ({ state }) => {
@@ -404,7 +550,7 @@ describe('transition', () => {
 
   it.each(VARIANTS)('leaves $label unchanged for every pair without a row', ({ state }) => {
     for (const event of ALL_EVENTS) {
-      if (state.name !== 'stopped' && COVERED.has(pairKey(state, event))) {
+      if (COVERED.has(pairKey(state, event))) {
         continue;
       }
       expect(transition(state, event)).toEqual({ state, effects: [] });
@@ -412,7 +558,7 @@ describe('transition', () => {
   });
 
   it('never leaves stopped, whatever arrives', () => {
-    for (const storeReady of [false, true]) {
+    for (const storeReady of BOTH) {
       for (const event of ALL_EVENTS) {
         expect(transition(stopped(storeReady), event)).toEqual({
           state: stopped(storeReady),
@@ -430,20 +576,25 @@ describe('transition', () => {
     expect(next.storeReady).toBe(state.storeReady);
   });
 
-  it('waits for the store after a link opened without it, then consumes on store_ready', () => {
-    const opened = transition(connecting(false), { type: 'link_opened', generation: G, now: NOW });
+  it('waits idle for the store after a link opened without it, then registers on store_ready', () => {
+    const opened = transition(connecting(false), LINK_OPENED);
     expect(opened.effects).toEqual([]);
+    expect(opened.state).toMatchObject({ name: 'open', consumer: 'idle', storeReady: false });
 
-    const ready = transition(opened.state, { type: 'store_ready' });
-    expect(ready.effects).toEqual([{ kind: 'consume' }]);
-    expect(ready.state).toMatchObject({ name: 'open', consumer: 'idle', storeReady: true });
+    const ready = transition(opened.state, STORE_READY);
+    expect(ready.effects).toEqual(CONSUME);
+    expect(ready.state).toMatchObject({ name: 'open', consumer: 'registering', storeReady: true });
   });
 });
 
 describe('isConsuming', () => {
-  it.each(VARIANTS)('is true only for open/active with a ready store: $label', ({ state }) => {
-    const expected = state.name === 'open' && state.consumer === 'active' && state.storeReady;
+  /** The contract as a table: exactly one of the fourteen variants consumes. */
+  const CONSUMING = new Set(['open/active (store ready)']);
 
-    expect(isConsuming(state)).toBe(expected);
-  });
+  it.each(VARIANTS)(
+    'is true only for open/active with a ready store: $label',
+    ({ label, state }) => {
+      expect(isConsuming(state)).toBe(CONSUMING.has(label));
+    },
+  );
 });

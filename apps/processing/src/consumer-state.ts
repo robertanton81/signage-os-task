@@ -8,13 +8,21 @@ import { assertNever } from '@telemetry/shared';
  * survives a link recycle. `open` carries `attempt` because the reset rule of `link_closed` needs
  * the number the link was opened with; `draining` is the stopping phase between the consumer
  * cancel and the link close, in which handlers still acknowledge.
+ *
+ * Inside `open` the consumer is `idle` (no registration), `registering` (a `consume` was issued
+ * and its reply is pending) or `active` (registered). The middle status exists because the store
+ * events can arrive while a registration is pending: a registration that lands after the store
+ * went away is cancelled and its deliveries returned, and a `store_ready` during a pending
+ * registration issues no second `consume`.
  */
 type Flags = { generation: number; storeReady: boolean };
+
+export type ConsumerStatus = 'idle' | 'registering' | 'active';
 
 export type ConsumerState =
   | ({ name: 'backoff'; attempt: number } & Flags)
   | ({ name: 'connecting'; attempt: number } & Flags)
-  | ({ name: 'open'; consumer: 'idle' | 'active'; attempt: number; openedAt: number } & Flags)
+  | ({ name: 'open'; consumer: ConsumerStatus; attempt: number; openedAt: number } & Flags)
   | ({ name: 'draining' } & Flags)
   | ({ name: 'stopped' } & Flags);
 
@@ -116,6 +124,7 @@ function stop(state: Running): Transition {
       // The attempt closes what it opened at its next check; the effect covers a link it already handed over.
       return { state: stopped(state), effects: [{ kind: 'close_link' }] };
     case 'open':
+      // A pending registration has no tag to cancel yet; it lands in `draining`, which cancels it.
       return {
         state: { name: 'draining', generation: state.generation, storeReady: state.storeReady },
         effects: state.consumer === 'active' ? [{ kind: 'cancel_consumer' }] : [],
@@ -132,10 +141,15 @@ function stopped(state: Running): ConsumerState {
 }
 
 function storeReady(state: Running): Transition {
-  // Only a link that waits for the store consumes now; a second store_ready must not register a
-  // second consumer on the same channel, and an active consumer already has one.
-  const consume = state.name === 'open' && state.consumer === 'idle' && !state.storeReady;
-  return { state: { ...state, storeReady: true }, effects: consume ? [{ kind: 'consume' }] : [] };
+  // Only an idle link consumes now: a pending registration lands on its own, and an active
+  // consumer already has one, so no second `consume` can be issued on one channel.
+  if (state.name === 'open' && state.consumer === 'idle' && !state.storeReady) {
+    return {
+      state: { ...state, consumer: 'registering', storeReady: true },
+      effects: [{ kind: 'consume' }],
+    };
+  }
+  return { state: { ...state, storeReady: true }, effects: [] };
 }
 
 function storeUnavailable(state: Running): Transition {
@@ -154,7 +168,8 @@ function storeUnavailable(state: Running): Transition {
   if (state.name === 'draining') {
     return { state: { ...state, storeReady: false }, effects: [] };
   }
-  // A watch runs at most once per outage: only the report that flips the flag starts it.
+  // A watch runs at most once per outage: only the report that flips the flag starts it. A pending
+  // registration keeps pending; it is cancelled when it lands (`consumer_registered` below).
   return {
     state: { ...state, storeReady: false },
     effects: state.storeReady ? [{ kind: 'watch_store' }] : [],
@@ -182,7 +197,7 @@ function fromConnecting(state: Connecting, event: LinkEvent): Transition {
       return {
         state: {
           name: 'open',
-          consumer: 'idle',
+          consumer: state.storeReady ? 'registering' : 'idle',
           attempt: state.attempt,
           openedAt: event.now,
           generation: state.generation,
@@ -228,20 +243,30 @@ function fromOpen(state: Open, event: LinkEvent): Transition {
       };
     }
     case 'consumer_registered':
-      return state.consumer === 'idle'
-        ? { state: { ...state, consumer: 'active' }, effects: [] }
-        : unchanged(state);
+      if (state.consumer !== 'registering') {
+        return unchanged(state);
+      }
+      if (state.storeReady) {
+        return { state: { ...state, consumer: 'active' }, effects: [] };
+      }
+      // The store went away while the registration was pending: the registration is cancelled, the
+      // deliveries it may already have received are aborted and returned; the watch of the report
+      // that flipped the flag is already running.
+      return {
+        state: { ...state, consumer: 'idle' },
+        effects: [{ kind: 'cancel_consumer' }, { kind: 'abort_handlers' }, { kind: 'return_held' }],
+      };
     case 'broker_cancelled':
       if (state.consumer !== 'active') {
         return unchanged(state);
       }
       // The broker returned the deliveries and cancelled only this consumer; the channel stays.
-      return {
-        state: { ...state, consumer: 'idle' },
-        effects: state.storeReady
-          ? [{ kind: 'abort_handlers' }, { kind: 'consume' }]
-          : [{ kind: 'abort_handlers' }],
-      };
+      return state.storeReady
+        ? {
+            state: { ...state, consumer: 'registering' },
+            effects: [{ kind: 'abort_handlers' }, { kind: 'consume' }],
+          }
+        : { state: { ...state, consumer: 'idle' }, effects: [{ kind: 'abort_handlers' }] };
     case 'backoff_elapsed':
     case 'link_opened':
     case 'link_failed':
