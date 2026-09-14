@@ -1,4 +1,5 @@
 import {
+  DUPLICATE_KEY_ERROR_CODE,
   assertNever,
   backoffDelay,
   messageIdentity,
@@ -79,7 +80,7 @@ type Context = {
  */
 const STATE_COLLISION: StoreFailure = {
   kind: 'server',
-  code: 11000,
+  code: DUPLICATE_KEY_ERROR_CODE,
   codeName: 'DuplicateKey',
   labels: [],
   message: 'state upsert collided twice',
