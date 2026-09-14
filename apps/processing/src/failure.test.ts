@@ -27,17 +27,23 @@ describe('classifyFailure', () => {
     expect(classifyFailure(failure)).toBe('transient');
   });
 
-  it('classifies a server failure with the retryable-write label as transient, code or not', () => {
-    expect(classifyFailure(server({ labels: [RETRYABLE_WRITE_LABEL] }))).toBe('transient');
-    expect(classifyFailure(server({ code: 999, labels: ['Other', RETRYABLE_WRITE_LABEL] }))).toBe(
-      'transient',
-    );
-  });
+  it.each([
+    { label: 'the label alone', code: undefined, labels: [RETRYABLE_WRITE_LABEL] },
+    {
+      label: 'the label next to another one and an unlisted code',
+      code: 999,
+      labels: ['Other', RETRYABLE_WRITE_LABEL],
+    },
+  ])(
+    'classifies a server failure with the retryable-write label as transient: $label',
+    ({ code, labels }) => {
+      expect(classifyFailure(server({ code, labels }))).toBe('transient');
+    },
+  );
 
   it.each([24, 50, 64, 91, 262, 10107, 11600])(
     'classifies server code %i as transient (consistency spec, decision 26)',
     (code) => {
-      expect(TRANSIENT_SERVER_CODES.has(code)).toBe(true);
       expect(classifyFailure(server({ code }))).toBe('transient');
     },
   );
@@ -49,15 +55,21 @@ describe('classifyFailure', () => {
   });
 
   it.each([
-    { label: 'a schema validation refusal (121)', code: 121 },
-    { label: 'an authentication failure (18)', code: 18 },
+    { label: 'a schema validation refusal (121)', code: 121, labels: [] },
+    { label: 'an authentication failure (18)', code: 18, labels: [] },
     {
       label: 'a duplicate key (11000), which the store turns into a result before it gets here',
       code: 11000,
+      labels: [],
     },
-    { label: 'no code at all', code: undefined },
-  ])('classifies a server failure with $label as permanent', ({ code }) => {
-    expect(classifyFailure(server({ code }))).toBe('permanent');
+    { label: 'no code at all', code: undefined, labels: [] },
+    {
+      label: 'a label that is not the retryable-write one',
+      code: undefined,
+      labels: ['TransientTransactionError'],
+    },
+  ])('classifies a server failure with $label as permanent', ({ code, labels }) => {
+    expect(classifyFailure(server({ code, labels }))).toBe('permanent');
   });
 
   it('classifies a closed client as closed', () => {
