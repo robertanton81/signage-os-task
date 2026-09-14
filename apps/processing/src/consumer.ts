@@ -126,7 +126,9 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
  * The amqplib shell around the pure state machine of `consumer-state.ts` (processing spec, section
  * "The consumer"). It turns amqplib events and the outcomes of its own asynchronous work into
  * events, and runs the effects `transition` returns, in order, on one serial queue: the pause
- * returns what it holds only after the cancel resolved and the handlers settled (A9).
+ * returns what it holds only after the cancel resolved and the handlers settled (A9). The two
+ * steps that do not wait for their turn are the abort and the close at the end of a drain that
+ * ran out of budget (`stop()`): the queue may be blocked by the very call the close rejects.
  *
  * Invariant 4: every delivery is dispatched with `void`, so up to `prefetch` handlers run at once
  * and the broker bounds them. Invariant 6: one connection and one channel per instance; the held
@@ -217,8 +219,10 @@ export class AmqpConsumer {
 
   /**
    * Decision 20: cancel first, drain up to the budget, then abort what is left and close the link.
-   * Resolves once the link is closed, within `shutdownTimeoutMs + AMQP_CLOSE_TIMEOUT_MS` plus the
-   * cancel's own bound. Called once; the shared lifecycle handler exits on a second signal.
+   * Resolves within `shutdownTimeoutMs + AMQP_CLOSE_TIMEOUT_MS` (the cancel's own bound runs
+   * inside the drain, not after it), with the link closed unless the broker never answered the
+   * close: then the socket is left to the heartbeat timeout, or to the process exit. Called once;
+   * the shared lifecycle handler exits on a second signal.
    */
   async stop(): Promise<void> {
     clearTimeout(this.#backoffTimer);
@@ -236,9 +240,30 @@ export class AmqpConsumer {
       );
       if ((await drained).outcome === 'timed_out') {
         this.#logger.warn(
-          { inFlight: this.#inFlight, timeoutMs: this.#shutdownTimeoutMs },
+          { generation, inFlight: this.#inFlight, timeoutMs: this.#shutdownTimeoutMs },
           'shutdown drain ended at its budget',
         );
+        this.#dispatch({ type: 'drained', generation });
+        // The effects `drained` queued (abort, then close) wait their turn on the chain, and what
+        // blocked the drain may block the chain as well: a `consume` reply the broker has not sent
+        // holds it until amqplib rejects the call, which only a closed link does (v2.0.1:
+        // `lib/connection.js` `toClosed` closes every channel, and `lib/channel.js` `toClosed`
+        // rejects each pending reply through `_rejectPending`; the connection gets there on the
+        // broker's close-ok, on a socket end or error, and on the heartbeat timeout). Both effects
+        // are idempotent, so they run here at once, and the wait for the close and the chain
+        // shares the close's bound; the chain's own copies find nothing left to do.
+        this.#registration?.controller.abort();
+        const ended = await settleWithin(
+          Promise.all([this.#closeLink(), this.#effects]),
+          AMQP_CLOSE_TIMEOUT_MS,
+        );
+        if (ended.outcome === 'timed_out') {
+          this.#logger.warn(
+            { generation, timeoutMs: AMQP_CLOSE_TIMEOUT_MS },
+            'shutdown ended before the link closed',
+          );
+        }
+        return;
       }
       this.#dispatch({ type: 'drained', generation });
     }
