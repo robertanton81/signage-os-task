@@ -227,6 +227,19 @@ describe('MongoStore without a database', () => {
     expect(lines.filter((line) => line.msg === 'store ready')).toHaveLength(0);
   });
 
+  it('ends a start aborted during its connect attempt without another line', async () => {
+    const { logger, lines } = captureLogger();
+    const store = await storeOnClosedPort(logger);
+    const startup = new AbortController();
+
+    const started = store.start(startup.signal);
+    // The abort lands while the first attempt is in flight (server selection takes 200 ms).
+    startup.abort();
+
+    await expect(started).resolves.toBe('aborted');
+    expect(lines.filter((line) => line.msg === 'store not ready')).toEqual([]);
+  });
+
   it('resolves the watch as aborted without a ping when its signal is already aborted', async () => {
     const { logger, lines } = captureLogger();
     const store = await storeOnClosedPort(logger);
