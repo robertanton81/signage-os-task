@@ -28,7 +28,11 @@ export type DeliveryRejection = {
 
 export type DeliveryInput = {
   content: Buffer;
-  /** amqplib's `properties.headers`; every value is read as `unknown`. */
+  /**
+   * amqplib's `properties.headers`: a plain object its codec built from the wire bytes, with no
+   * accessor that could throw, so the one property read below cannot fail. Every value is read as
+   * `unknown`.
+   */
   headers: Record<string, unknown> | undefined;
   redelivered: boolean;
   /** Read only when the header is unusable. */

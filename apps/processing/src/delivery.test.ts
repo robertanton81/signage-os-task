@@ -71,6 +71,46 @@ describe('decodeDelivery', () => {
     });
   });
 
+  it('rejects an oversized body as too large before it is decoded, even when it is not UTF-8', () => {
+    // Under the swapped order the reason would be invalid_utf8: this proves the size check is first.
+    const content = Buffer.concat([
+      Buffer.from([0xff]),
+      Buffer.from('x'.repeat(MAX_FRAME_BYTES), 'utf8'),
+    ]);
+
+    const result = decodeDelivery({
+      content,
+      headers: headerReceivedAt,
+      redelivered: false,
+      clock,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      rejection: { reason: 'body_too_large', bytes: content.length },
+    });
+  });
+
+  it('lets a body of exactly MAX_FRAME_BYTES bytes through to the schema check', () => {
+    // No valid message is that long (a diagnostic message is at most 1 024 characters), so the
+    // proof of the inclusive bound is the reason: the schema, not the size, rejects this body.
+    const base = JSON.stringify({ ...exampleMessages.status, junk: '' }).length;
+    const content = Buffer.from(
+      JSON.stringify({ ...exampleMessages.status, junk: 'x'.repeat(MAX_FRAME_BYTES - base) }),
+      'utf8',
+    );
+    expect(content.length).toBe(MAX_FRAME_BYTES);
+
+    const result = decodeDelivery({
+      content,
+      headers: headerReceivedAt,
+      redelivered: false,
+      clock,
+    });
+
+    expect(result).toMatchObject({ ok: false, rejection: { reason: 'invalid_schema' } });
+  });
+
   it('rejects a body with an invalid UTF-8 byte inside a string value instead of repairing it', () => {
     const text = JSON.stringify(exampleMessages.diagnostic);
     const inside = text.indexOf('temperature above') + 'temperature'.length;
@@ -109,6 +149,8 @@ describe('decodeDelivery', () => {
       ok: false,
       rejection: { reason: 'invalid_json', identity: {}, bytes: content.length },
     });
+    if (result.ok) throw new Error('unreachable');
+    expect(result.rejection.detail.length).toBeGreaterThan(0);
   });
 
   it('rejects a schema violation with the raw identity fields it could read', () => {
@@ -132,6 +174,8 @@ describe('decodeDelivery', () => {
         bytes: content.length,
       },
     });
+    if (result.ok) throw new Error('unreachable');
+    expect(result.rejection.detail.length).toBeGreaterThan(0);
   });
 
   it.each([

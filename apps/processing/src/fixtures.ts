@@ -1,9 +1,10 @@
-import type {
-  AlertDocument,
-  DeviceStateDocument,
-  EventDocument,
-  TelemetryEventType,
-  TelemetryMessageOf,
+import {
+  messageIdentity,
+  type AlertDocument,
+  type DeviceStateDocument,
+  type EventDocument,
+  type TelemetryEventType,
+  type TelemetryMessageOf,
 } from '@telemetry/shared';
 
 /** The `x-received-at` header value the tests attach: ingest's clock, after `occurredAt`. */
@@ -80,7 +81,7 @@ export const exampleEvents: { [T in TelemetryEventType]: Extract<EventDocument, 
 
 /** The alert of the diagnostic message: `_id` is its identity string. */
 export const exampleAlert: AlertDocument = {
-  _id: 'dev-0001:1700000000000:4',
+  _id: messageIdentity(exampleMessages.diagnostic),
   deviceId: envelope.deviceId,
   sessionId: envelope.sessionId,
   seq: 4,
