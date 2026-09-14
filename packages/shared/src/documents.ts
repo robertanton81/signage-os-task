@@ -3,8 +3,10 @@ import type { PayloadOf, TelemetryEventType } from './message.js';
 /**
  * Watermark and provenance stored with every section (consistency spec, decision 7).
  * The three message fields come from the schema; `receivedAt` is stamped by ingest and has no
- * schema source. No payload may use these names — `contract.test-d.ts` enforces that, because the
- * update pipeline spreads the payload last and a collision would silently overwrite the watermark.
+ * schema source. No payload may use these names — `contract.test-d.ts` enforces that, because a
+ * section is the payload plus these fields in one document: the processing pipeline builder spreads
+ * the payload first and the watermark fields last, so the watermark would win a collision, but the
+ * type check keeps the collision from existing at all.
  */
 export type SectionMeta = {
   sessionId: number;

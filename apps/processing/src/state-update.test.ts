@@ -176,6 +176,19 @@ describe('buildStateUpdate', () => {
     expect(evaluate(guard, { diagnostic: { sessionId: message.sessionId, seq: 1 } })).toBe(true);
     expect(evaluate(guard, { diagnostic: { sessionId: message.sessionId, seq: 9 } })).toBe(false);
   });
+
+  it('keeps the watermark when a payload carries a key of the same name', () => {
+    // The contract forbids such a payload at the type level (shared `contract.test-d.ts`); the cast
+    // exists only to prove that the spread order is a real second line of defence at runtime.
+    const colliding = { ...message.payload, seq: 999 } as typeof message.payload;
+
+    const { pipeline } = buildStateUpdate({ ...message, payload: colliding }, EXAMPLE_RECEIVED_AT);
+    const stage = pipeline[0] as {
+      $set: { diagnostic: { $cond: { then: { $literal: { seq: number } } } } };
+    };
+
+    expect(stage.$set.diagnostic.$cond.then.$literal.seq).toBe(message.seq);
+  });
 });
 
 describe('classifyOutcome', () => {
