@@ -114,6 +114,7 @@ Změněno 2026-09-13 podle `docs/specs/2026-09-13-websocket-transport-design.md`
 - [ ] Test: více instancí processing služby souběžně nad stejnou frontou dává konzistentní výsledek.
 - [ ] Test: nevalidní zpráva je odmítnuta a nedostane se do fronty.
 - [ ] Test: ingest publisher proti skutečnému RabbitMQ — restart brokeru s připojenými zařízeními (znovupublikace nepotvrzených zpráv), smazaná fronta (return → recyklace → nová deklarace topologie), blokované spojení (resource alarm), SIGTERM s připojenými zařízeními, zamrzlý broker (`docker pause`: heartbeat timeout → znovupublikace všech nepotvrzených zpráv) (ingest spec 2026-09-13, rozhodnutí 25).
+- [ ] Test: processing consumer proti skutečnému RabbitMQ a MongoDB — dvanáct scénářů skriptovaného běhu: normální tok, duplicita, pořadí uvnitř sekce i napříč sekcemi, restart session, dvě instance, poison zprávy, zastavená a zamrzlá MongoDB (pauza a obnovení konzumace), restart brokeru, SIGTERM s rozpracovanými zprávami, špatné přihlašovací údaje (processing spec 2026-09-13, rozhodnutí 27).
 - [ ] Zapojit integrační testy do rootového `test` skriptu.
 - [ ] Volitelně: CI pipeline pro automatický běh testů.
 
