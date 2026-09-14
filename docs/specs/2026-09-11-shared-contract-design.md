@@ -89,6 +89,7 @@ packages/shared/src/
   collections.ts       MongoDB collection names, the dedup index, DUPLICATE_KEY_ERROR_CODE
   logger.ts            createLogger, messageLogger, LOG_LEVELS, Logger type
   config.ts            loadConfig, ConfigError, envInt, logLevelEnv, shutdownEnv, rabbitmqEnv, mongodbEnv
+  health.ts            startHealthServer, HealthServer, ReadinessReport<Reason>, READINESS_PATH, HEALTH_IDLE_TIMEOUT_MS (moved from ingest on 2026-09-13, processing spec decision 3)
   fixtures.ts          example messages for this package's tests (not in the barrel; the package exports no subpath for it)
   *.test.ts            unit tests next to each module; contract.test-d.ts holds type-level assertions
 ```
