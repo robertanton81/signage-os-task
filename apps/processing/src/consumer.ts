@@ -573,14 +573,17 @@ export class AmqpConsumer {
     }
     registration.held.set(message.fields.deliveryTag, message);
     this.#counters.received += 1;
-    const run: Promise<void> = this.#run(registration, message).then(() => {
-      registration.dispatched.delete(run);
-    });
-    registration.dispatched.add(run);
+    // Not awaited: up to `prefetch` handlers run at once, and the broker bounds them (invariant 4).
+    void this.#run(registration, message);
   }
 
-  /** One handler; never rejects. Acknowledges only through a live registration on the current link. */
+  /**
+   * One handler; never rejects. Tracks itself in the registration's dispatched set for the drain
+   * and the pause, and acknowledges only through a live registration on the current link.
+   */
   async #run(registration: Registration, message: ConsumeMessage): Promise<void> {
+    const done = Promise.withResolvers<void>();
+    registration.dispatched.add(done.promise);
     this.#inFlight += 1;
     try {
       const result = await processDelivery({
@@ -604,6 +607,8 @@ export class AmqpConsumer {
       );
     } finally {
       this.#inFlight -= 1;
+      registration.dispatched.delete(done.promise);
+      done.resolve();
     }
   }
 
