@@ -108,7 +108,7 @@ Hotovo 2026-09-14 podle `docs/specs/2026-09-13-processing-design.md` a `docs/pla
 
 ## 7. Integrační testy
 
-- [ ] Infrastruktura pro integrační testy nad skutečnými instancemi MongoDB a RabbitMQ (oddělená od vývojového běhu).
+- [ ] Infrastruktura pro integrační testy nad skutečnými instancemi MongoDB a RabbitMQ (oddělená od vývojového běhu). Vývojový stack fixuje název projektu Compose `telemetry`, názvy front a publikované porty 15672 a 27017, takže testy potřebují jiný název projektu nebo vlastní Compose soubor (compose spec 2026-09-14, sekce Scaling).
 - [ ] Test: zpráva projde z ingestu přes RabbitMQ do MongoDB.
 - [ ] Test: duplicitní zpráva nezpůsobí duplicitní efekt (čítač, alert, stav).
 - [ ] Test: starší zpráva nepřepíše novější stav.
@@ -124,7 +124,7 @@ Hotovo 2026-09-14 podle `docs/specs/2026-09-13-processing-design.md` a `docs/pla
 
 - [ ] Stručný popis architektury a toku dat.
 - [ ] Diagram architektury (textový diagram přímo v README stačí).
-- [ ] Návod na spuštění systému a testů.
+- [ ] Návod na spuštění systému a testů. Uvést minimální verze na hostu: Docker Engine 25 a Docker Compose 2.20.2 (health checky používají `start_interval`; compose spec 2026-09-14, rozhodnutí 13); Node ani pnpm na hostu nejsou potřeba, ověřovací skript je čistý Node bez závislostí.
 - [ ] Konfigurace emulátoru – všechny env proměnné s výchozími hodnotami.
 - [ ] Jak spustit více instancí ingest a processing.
 - [ ] Datový model a zvolená metadata zpráv s odůvodněním.
