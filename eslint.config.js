@@ -68,5 +68,13 @@ export default defineConfig([
     files: ['*.config.{ts,mts}'],
     extends: [tseslint.configs.disableTypeChecked],
   },
+  {
+    // Host-side scripts run under Node: name the Node globals they use, so `no-undef` still
+    // catches a typo but not `process`. Add a name here when a script needs another one.
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      globals: { Buffer: 'readonly', fetch: 'readonly', process: 'readonly', URL: 'readonly' },
+    },
+  },
   prettier,
 ]);
