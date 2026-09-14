@@ -16,7 +16,11 @@ export default defineConfig({
         extends: true,
         test: {
           name: 'unit',
-          include: ['{apps,packages}/*/src/**/*.test.ts'],
+          include: [
+            '{apps,packages}/*/src/**/*.test.ts',
+            // The pure helpers of the Compose check script (scripts/compose-check-lib.mjs).
+            'scripts/**/*.test.mjs',
+          ],
         },
       },
       {

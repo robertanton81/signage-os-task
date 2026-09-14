@@ -13,10 +13,20 @@
 // No credential reaches a host command line or this output: MongoDB is queried through
 // `docker compose exec` with the container's own environment variables, and the management API
 // gets an Authorization header built here from the resolved RABBITMQ_URL (decision 27).
+//
+// The poll and the pass rules of the checks are pure functions in compose-check-lib.mjs, with unit
+// tests; this file is the Docker-driving shell, proven by its recorded runs (compose plan, Task 4).
 import { execFile, spawn } from 'node:child_process';
-import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
+
+import {
+  countsDetail,
+  countsReached,
+  parseLastSummaryOpen,
+  splitCoversFleet,
+  waitFor,
+} from './compose-check-lib.mjs';
 
 /** Resolved from this file, so the script runs from any directory and Compose reads the .env next to the file. */
 const COMPOSE_FILE = fileURLToPath(new URL('../docker-compose.yml', import.meta.url));
@@ -62,32 +72,6 @@ function composeAttached(args) {
     child.on('error', reject);
     child.on('close', (code) => resolve(code ?? 1));
   });
-}
-
-/**
- * Polls `probe` until it returns a value other than undefined or the budget is spent. A probe
- * that throws counts as "not yet" (mongosh before the server answers, fetch before the management
- * listener is up); the last error is reported when the budget runs out.
- */
-async function waitFor({ probe, budgetMs, intervalMs = 1000 }) {
-  const deadline = Date.now() + budgetMs;
-  let lastError;
-  for (;;) {
-    try {
-      const value = await probe();
-      if (value !== undefined) return { ok: true, value };
-    } catch (error) {
-      lastError = error;
-    }
-    if (Date.now() >= deadline) {
-      const reason = lastError instanceof Error ? lastError.message : String(lastError);
-      return {
-        ok: false,
-        detail: lastError === undefined ? 'timed out' : `timed out; last error: ${reason}`,
-      };
-    }
-    await sleep(intervalMs);
-  }
 }
 
 let failures = 0;
@@ -140,9 +124,8 @@ async function runChecks() {
   );
 
   // --- 3. data reaches MongoDB: one device_state document per device, events flowing -----------
-  // Exactly the fleet size, not at least: device_state is keyed by device id, so a higher count
-  // means a previous run's data is still in the volume (reset with `docker compose down -v`) and
-  // a lower one means devices are missing. Either way the FAIL line shows the last counts read.
+  // The pass rule is countsReached (exactly the fleet size, at least one event) and the line is
+  // countsDetail, which adds the reset hint when a previous run's data is still in the volume.
   let lastCounts;
   const counts = await waitFor({
     probe: async () => {
@@ -155,26 +138,18 @@ async function runChecks() {
         `mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin ${MONGODB_DB} --eval '${MONGO_EVAL}'`,
       ]);
       lastCounts = JSON.parse(stdout.trim());
-      return lastCounts.state === devices && lastCounts.events > 0 ? lastCounts : undefined;
+      return countsReached({ counts: lastCounts, devices }) ? lastCounts : undefined;
     },
     budgetMs: MONGODB_BUDGET_MS,
   });
-  const countsSeen =
-    lastCounts === undefined
-      ? 'no counts read'
-      : `device_state=${String(lastCounts.state)} events=${String(lastCounts.events)} alerts=${String(lastCounts.alerts)}`;
-  let countsProblem = '';
-  if (!counts.ok) {
-    countsProblem = `; ${counts.detail}`;
-    if (lastCounts !== undefined && lastCounts.state > devices) {
-      countsProblem +=
-        '; more documents than devices: a previous run is still in the volume, reset with docker compose down -v';
-    }
-  }
   report({
     name: 'data reaches MongoDB',
     ok: counts.ok,
-    detail: `${countsSeen} expected_devices=${String(devices)}${countsProblem}`,
+    detail: countsDetail({
+      counts: lastCounts,
+      devices,
+      failure: counts.ok ? undefined : counts.detail,
+    }),
   });
 
   if (!flags.scale) return;
@@ -209,15 +184,9 @@ async function runChecks() {
       split = [];
       for (const id of ingestIds) {
         const { stdout } = await run('docker', ['logs', id], { maxBuffer: MAX_BUFFER });
-        const last = stdout
-          .split('\n')
-          .filter((line) => line.includes('"msg":"summary"'))
-          .at(-1);
-        split.push(last === undefined ? undefined : Number(JSON.parse(last).open));
+        split.push(parseLastSummaryOpen(stdout));
       }
-      const total = split.reduce((sum, value) => sum + (value ?? 0), 0);
-      const everyReplicaHasDevices = split.every((value) => value !== undefined && value > 0);
-      return everyReplicaHasDevices && total === devices ? split : undefined;
+      return splitCoversFleet({ split, devices }) ? split : undefined;
     },
     budgetMs: SPREAD_BUDGET_MS,
   });
