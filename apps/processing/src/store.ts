@@ -261,6 +261,10 @@ export class MongoStore implements StorePort, StoreWatcher {
         if (isIndexConflict(failure)) {
           throw new StoreError(failure);
         }
+        if (signal.aborted) {
+          // A stop during the attempt: the failure that ends it is not worth a line.
+          return 'aborted';
+        }
         this.#logger.warn({ attempt, failure }, 'store not ready');
       }
       const delayMs = backoffDelay({
