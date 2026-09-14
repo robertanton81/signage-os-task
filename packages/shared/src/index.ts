@@ -11,3 +11,4 @@ export * from './config.js';
 export * from './backoff.js';
 export * from './lifecycle.js';
 export * from './settle.js';
+export * from './health.js';

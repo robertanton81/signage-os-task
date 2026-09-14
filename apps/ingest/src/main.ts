@@ -4,11 +4,13 @@ import {
   FAILURE_EXIT_CODE,
   createLifecycleHandlers,
   createLogger,
+  startHealthServer,
+  type HealthServer,
   type Logger,
 } from '@telemetry/shared';
 
 import { loadIngestConfig } from './config.js';
-import { readinessReport, startHealthServer, type HealthServer } from './health.js';
+import { readinessReport } from './health.js';
 import { AmqpPublisher } from './publisher.js';
 import { IngestServer } from './server.js';
 
