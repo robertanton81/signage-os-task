@@ -142,7 +142,8 @@ describe('ingest publisher against RabbitMQ', () => {
       await env.waitFor(() => ingest.stats().confirmed >= 20, {
         describe: () => `confirmed ${String(ingest.stats().confirmed)}`,
       });
-      const restarting = restart(env, 'rabbitmq');
+      // Tracked, so a wait that fails before the `await` below leaves no unhandled rejection.
+      const restarting = env.track(restart(env, 'rabbitmq'));
       // Not ready at least once during the restart, polled while the restart runs.
       await env.waitFor(async () => (await ingest.readiness()).status === 503, {
         timeoutMs: 15_000,
@@ -153,7 +154,9 @@ describe('ingest publisher against RabbitMQ', () => {
         describe: () => `publisher ${ingest.publisher.state.name}`,
       });
       const target = sending.sent.length + 3 * 20;
-      await env.waitFor(() => sending.sent.length >= target);
+      await env.waitFor(() => sending.sent.length >= target, {
+        describe: () => `sent ${String(sending.sent.length)} of ${String(target)}`,
+      });
     } finally {
       await sending.stop();
     }

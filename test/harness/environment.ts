@@ -70,7 +70,7 @@ type Recovery = {
 export const HARNESS_TIMEOUT_MS = 5_000;
 /** How long `dispose()` waits for an in-flight fault command; an aborted command settles at once. */
 const IN_FLIGHT_SETTLE_MS = 5_000;
-/** One recovery's bound inside `dispose()`, under the 60 s hook budget. */
+/** The bound of every recovery together inside `dispose()`, under the 60 s hook budget. */
 const RECOVERY_TIMEOUT_MS = 50_000;
 
 function userinfo({ user, password }: { user: string; password: string }): string {
@@ -211,12 +211,14 @@ class Environment implements TestEnvironment {
     await step('in-flight commands', () =>
       settleWithin(Promise.allSettled([...this.#inFlight]), IN_FLIGHT_SETTLE_MS),
     );
+    // One bound for all recoveries together: a test with two faults (C11c) still fits the hook budget.
+    const recoverySignal = AbortSignal.timeout(RECOVERY_TIMEOUT_MS);
     for (const entry of [...this.#recoveries].reverse()) {
       await step(entry.label, async () => {
         // An attempt the test started under its own signal settles first; a failed or aborted one
-        // is then run again under a fresh bound of its own.
+        // is then run again under the shared bound.
         await entry.attempt?.catch(() => undefined);
-        await this.#recover(entry, AbortSignal.timeout(RECOVERY_TIMEOUT_MS));
+        await this.#recover(entry, recoverySignal);
       });
     }
     await step('amqp close', () => this.#closeAmqp());

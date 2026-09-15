@@ -413,7 +413,8 @@ describe('processing consumer against RabbitMQ and MongoDB', () => {
     await publishAll(first, batch1.sends);
     await env.awaitAcked(processing, 100);
 
-    const restarting = restart(env, 'rabbitmq');
+    // Tracked, so a wait that fails before the `await` below leaves no unhandled rejection.
+    const restarting = env.track(restart(env, 'rabbitmq'));
     await processing.logs.waitForLine(byMsg('consumer reconnect scheduled'), 15_000);
     // Polled while the restart runs, as the spec says; the broker is down for seconds, so the
     // consumer cannot register again before this resolves.
