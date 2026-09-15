@@ -8,6 +8,9 @@ import {
   type AlertDocument,
   type DeviceStateDocument,
   type EventDocument,
+  type MessageIdentity,
+  type OrderKey,
+  type TelemetryEventType,
 } from '@telemetry/shared';
 import type { Db } from 'mongodb';
 
@@ -88,28 +91,31 @@ export function awaitAcked(
   ).then(() => undefined);
 }
 
+/** The part of a `device_state` document the comparison reads: the key of each section present. */
+export type StateKeys = { _id: string } & { [T in TelemetryEventType]?: OrderKey };
+
+/** What `missingFromEndState` reads of the three collections. */
+export type EndStateReadout = {
+  events: readonly MessageIdentity[];
+  states: readonly StateKeys[];
+  alertIds: readonly string[];
+};
+
 /**
- * What the database still lacks of `expected`: every identity as an event document, every section
- * at its key, every alert present; '' when it holds everything. A state that cannot regress, so it
- * is a sound completion signal where a redelivery could add deliveries the test did not make (C10).
+ * What `readout` still lacks of `expected`: every identity as an event, every section at its key,
+ * every alert present; '' when it holds everything. A state that cannot regress, so it is a sound
+ * completion signal where a redelivery could add deliveries the test did not make (C10). Pure, with
+ * a unit test of its own (`wait.test.ts`).
  */
-export async function missingFromEndState(db: Db, expected: Expected): Promise<string> {
-  const events = await db
-    .collection<EventDocument>(EVENTS_COLLECTION)
-    .find({}, { projection: { deviceId: 1, sessionId: 1, seq: 1 } })
-    .toArray();
-  const stored = new Set(events.map((event) => messageIdentity(event)));
+export function missingFromReadout(readout: EndStateReadout, expected: Expected): string {
+  const stored = new Set(readout.events.map((event) => messageIdentity(event)));
   let identities = 0;
   for (const identity of expected.identities) {
     if (!stored.has(identity)) {
       identities += 1;
     }
   }
-  const states = await db
-    .collection<DeviceStateDocument>(DEVICE_STATE_COLLECTION)
-    .find({})
-    .toArray();
-  const byDevice = new Map(states.map((state) => [state._id, state]));
+  const byDevice = new Map(readout.states.map((state) => [state._id, state]));
   let sections = 0;
   for (const [deviceId, keys] of expected.sections) {
     const state = byDevice.get(deviceId);
@@ -120,11 +126,7 @@ export async function missingFromEndState(db: Db, expected: Expected): Promise<s
       }
     }
   }
-  const alertDocuments = await db
-    .collection<AlertDocument>(ALERTS_COLLECTION)
-    .find({}, { projection: { _id: 1 } })
-    .toArray();
-  const alertIds = new Set(alertDocuments.map((alert) => alert._id));
+  const alertIds = new Set(readout.alertIds);
   let alerts = 0;
   for (const identity of expected.alerts) {
     if (!alertIds.has(identity)) {
@@ -135,6 +137,26 @@ export async function missingFromEndState(db: Db, expected: Expected): Promise<s
     return '';
   }
   return `${String(identities)} identities missing, ${String(sections)} sections not at their key, ${String(alerts)} alerts missing`;
+}
+
+/** The three reads behind `missingFromReadout`, on the harness's own client. */
+export async function missingFromEndState(db: Db, expected: Expected): Promise<string> {
+  const events = await db
+    .collection<EventDocument>(EVENTS_COLLECTION)
+    .find({}, { projection: { deviceId: 1, sessionId: 1, seq: 1 } })
+    .toArray();
+  const states = await db
+    .collection<DeviceStateDocument>(DEVICE_STATE_COLLECTION)
+    .find({})
+    .toArray();
+  const alerts = await db
+    .collection<AlertDocument>(ALERTS_COLLECTION)
+    .find({}, { projection: { _id: 1 } })
+    .toArray();
+  return missingFromReadout(
+    { events, states, alertIds: alerts.map((alert) => alert._id) },
+    expected,
+  );
 }
 
 export function awaitEndState({
