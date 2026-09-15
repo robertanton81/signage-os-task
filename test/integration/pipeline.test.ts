@@ -1,21 +1,25 @@
+import type { TelemetryMessage } from '@telemetry/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   SESSION_A,
   SESSION_B,
   connectDevice,
+  identitiesOf,
   messages,
   queueDepth,
   readAlerts,
   readEvents,
   readState,
   sectionKey,
+  stateMismatches,
 } from '../harness/clients.js';
 import {
   bindEnvironment,
   createEnvironment,
   type TestEnvironment,
 } from '../harness/environment.js';
+import { generateLoad } from '../harness/load.js';
 import {
   startIngest,
   startProcessing,
@@ -189,4 +193,56 @@ describe('pipeline: device → ingest → RabbitMQ → processing → MongoDB', 
     expect(await readEvents(env)).toHaveLength(4);
     expect(processing.stats()).toMatchObject({ stale: 1, failed: 0 });
   });
+
+  it('P6 many devices in parallel end in the expected state', async ({ signal }) => {
+    const env = environment(signal);
+    const { ingest, processing } = await startPipeline(env);
+    const { sends, expected } = generateLoad({
+      devices: 20,
+      messages: 1000,
+      hotShare: 0.25,
+      duplicatePercent: 5,
+      swapPercent: 5,
+      seed: 1,
+    });
+    const streams = new Map<string, TelemetryMessage[]>();
+    for (const message of sends) {
+      const stream = streams.get(message.deviceId) ?? [];
+      stream.push(message);
+      streams.set(message.deviceId, stream);
+    }
+    expect(streams.size).toBe(20);
+    const devices = await Promise.all(
+      [...streams.keys()].map(() => connectDevice(env, ingest.port)),
+    );
+    // Every device sends its own stream in order, all twenty at once.
+    [...streams.values()].forEach((stream, index) => {
+      const device = devices[index];
+      if (device === undefined) {
+        throw new Error(`no device for stream ${String(index)}`);
+      }
+      for (const message of stream) {
+        device.sendMessage(message);
+      }
+    });
+    await env.awaitAcked(processing, sends.length);
+
+    const events = await readEvents(env);
+    expect(identitiesOf(events)).toEqual(expected.identities);
+    expect(events).toHaveLength(expected.identities.size);
+    expect(await stateMismatches(env, expected)).toEqual([]);
+    expect(new Set((await readAlerts(env)).map((alert) => alert._id))).toEqual(expected.alerts);
+    const stats = processing.stats();
+    // `stale` is reported, not asserted: whether a swapped lower `seq` is processed after the
+    // higher one depends on scheduling. `duplicate` counts duplicate inserts of any cause.
+    expect(stats, `stats ${JSON.stringify(stats)}`).toMatchObject({
+      created: 20,
+      failed: 0,
+      rejected: 0,
+    });
+    expect(stats.duplicate, `stats ${JSON.stringify(stats)}`).toBeGreaterThanOrEqual(
+      expected.duplicates,
+    );
+    expect((await queueDepth(env))?.ready).toBe(0);
+  }, 60_000);
 });
