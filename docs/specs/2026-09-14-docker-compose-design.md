@@ -487,7 +487,7 @@ devices (invariant 5).
 **Forward note for step 7.** The integration tests need their own RabbitMQ and MongoDB, "oddělená
 od vývojového běhu". This stack fixes the project name (`telemetry`), the queue names and the
 published ports 15672 and 27017, so step 7 must use a different project name or its own Compose
-file rather than reuse this one. The seam is named here so that step is not surprised.
+file rather than reuse this one. The seam is named here so that step is not surprised. **Resolved 2026-09-15** by the integration tests spec (`docs/specs/2026-09-14-integration-tests-design.md`, decisions 1 and 2): a file of its own, `docker-compose.test.yml`, under the project name `telemetry-test`, with the loopback ports 5673, 15673 and 27018 and no volumes, so both stacks run side by side.
 
 **Trade-offs to record when the step lands.** The consistency spec's running list ends at T49 in
 position but at T54 by number (its own note explains the gap), so the rows this step adds start at
