@@ -31,31 +31,31 @@ No new library API or dependency is introduced. Reuse the pinned versions and so
 
 ## File Changes
 
-| Action | Path | Purpose |
-| --- | --- | --- |
-| Create | `apps/ingest/src/publish-port.ts` | Own `PublishRequest` and `PublishPort`. |
-| Modify | `apps/ingest/src/publisher.ts` | Import and implement the extracted port. |
-| Modify | `apps/ingest/src/server.ts` | Import the port directly. |
-| Modify | `apps/ingest/src/connection.ts` | Import the port directly. |
-| Modify | `apps/ingest/src/test-publisher.ts` | Import the port and request directly. |
-| Create | `apps/processing/src/store-port.ts` | Own `StorePort` and `StoreWatcher`. |
-| Modify | `apps/processing/src/store.ts` | Implement the port and build the MongoDB update internally. |
-| Modify | `apps/processing/src/handler.ts` | Send the message and timestamp to the port. |
-| Modify | `apps/processing/src/consumer.ts` | Import storage interfaces directly. |
-| Modify | `apps/processing/src/test-store.ts` | Record semantic state-write arguments. |
-| Modify | `apps/processing/src/consumer.test.ts` | Update `StoreWatcher` import. |
-| Modify | `apps/processing/src/consumer-registration.test.ts` | Update `StoreWatcher` import. |
-| Modify | `apps/processing/src/handler.test.ts` | Assert message and timestamp instead of a query. |
-| Modify | `apps/processing/src/store.test.ts` | Call the semantic state-write interface. |
-| Create | `apps/processing/src/mongo-state-update.ts` | Own `StateUpdate`, `newerThanStoredExpr`, and `buildStateUpdate`. |
-| Create | `apps/processing/src/mongo-state-update.test.ts` | Receive existing builder and expression tests. |
-| Modify | `apps/processing/src/state-update.ts` | Retain only pure outcome and gap logic. |
-| Modify | `apps/processing/src/state-update.test.ts` | Retain outcome and gap tests. |
-| Modify | `test/harness/services.ts` | Separate concrete store import from port imports. |
-| Modify | `test/harness/clients.ts` | Import storage interfaces from their owner. |
-| Modify | `test/integration/processing-consumer.test.ts` | Extend C13 to verify the exact received timestamp stored through the real adapter. |
-| Modify | `docs/specs/2026-09-13-ingest-design.md` | Record the port's new owner. |
-| Modify | `docs/specs/2026-09-13-processing-design.md` | Record the new port signature and builder ownership. |
+| Action | Path                                                | Purpose                                                                            |
+| ------ | --------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| Create | `apps/ingest/src/publish-port.ts`                   | Own `PublishRequest` and `PublishPort`.                                            |
+| Modify | `apps/ingest/src/publisher.ts`                      | Import and implement the extracted port.                                           |
+| Modify | `apps/ingest/src/server.ts`                         | Import the port directly.                                                          |
+| Modify | `apps/ingest/src/connection.ts`                     | Import the port directly.                                                          |
+| Modify | `apps/ingest/src/test-publisher.ts`                 | Import the port and request directly.                                              |
+| Create | `apps/processing/src/store-port.ts`                 | Own `StorePort` and `StoreWatcher`.                                                |
+| Modify | `apps/processing/src/store.ts`                      | Implement the port and build the MongoDB update internally.                        |
+| Modify | `apps/processing/src/handler.ts`                    | Send the message and timestamp to the port.                                        |
+| Modify | `apps/processing/src/consumer.ts`                   | Import storage interfaces directly.                                                |
+| Modify | `apps/processing/src/test-store.ts`                 | Record semantic state-write arguments.                                             |
+| Modify | `apps/processing/src/consumer.test.ts`              | Update `StoreWatcher` import.                                                      |
+| Modify | `apps/processing/src/consumer-registration.test.ts` | Update `StoreWatcher` import.                                                      |
+| Modify | `apps/processing/src/handler.test.ts`               | Assert message and timestamp instead of a query.                                   |
+| Modify | `apps/processing/src/store.test.ts`                 | Call the semantic state-write interface.                                           |
+| Create | `apps/processing/src/mongo-state-update.ts`         | Own `StateUpdate`, `newerThanStoredExpr`, and `buildStateUpdate`.                  |
+| Create | `apps/processing/src/mongo-state-update.test.ts`    | Receive existing builder and expression tests.                                     |
+| Modify | `apps/processing/src/state-update.ts`               | Retain only pure outcome and gap logic.                                            |
+| Modify | `apps/processing/src/state-update.test.ts`          | Retain outcome and gap tests.                                                      |
+| Modify | `test/harness/services.ts`                          | Separate concrete store import from port imports.                                  |
+| Modify | `test/harness/clients.ts`                           | Import storage interfaces from their owner.                                        |
+| Modify | `test/integration/processing-consumer.test.ts`      | Extend C13 to verify the exact received timestamp stored through the real adapter. |
+| Modify | `docs/specs/2026-09-13-ingest-design.md`            | Record the port's new owner.                                                       |
+| Modify | `docs/specs/2026-09-13-processing-design.md`        | Record the new port signature and builder ownership.                               |
 
 ## Tasks
 
@@ -137,17 +137,17 @@ pnpm lint && pnpm typecheck && pnpm test
 
 ## Verification Criteria
 
-| # | Criterion | Evidence |
-| --- | --- | --- |
-| 1 | Ingest application consumers import the publisher interface without importing the adapter module. | Inspect imports in `server.ts`, `connection.ts`, and `test-publisher.ts`; no old port re-export remains. |
-| 2 | Handler and storage port contain no MongoDB aggregation expressions or `StateUpdate` dependency. | Inspect `handler.ts` and `store-port.ts`; builder imports appear only in the adapter and builder tests. |
-| 3 | The state write remains one conditional operation, with unchanged expression, options, and error behavior. | Review moved builder against its previous version and review `store.ts`; run real-service integration tests. |
-| 4 | Duplicate and stale events have no repeated effect or stale overwrite. | Pipeline P2 and P3; processing consumer integration suite. |
-| 5 | Section ordering, session ordering, and parallel device processing remain correct. | Pipeline P4, P5, and P6; multiple-consumer scenarios in processing integration suite. |
-| 6 | Handler retry, abort, partial-write repair, and final verdict semantics are unchanged. | Existing handler tests with semantic port arguments; processing consumer integration suite. |
-| 7 | Every downstream consumer compiles, including integration harness wrappers. | Root `pnpm typecheck`. |
-| 8 | Repository checks pass and documentation reflects the new boundary. | `pnpm lint && pnpm typecheck && pnpm test`; targeted formatting check of touched files; reviewed spec amendments. |
-| 9 | The adapter preserves the supplied received timestamp in both the updated section and `lastEvent`. | Extended C13 in `test/integration/processing-consumer.test.ts` asserts the fixed value after real MongoDB persistence and partial-write recovery. |
+| #   | Criterion                                                                                                  | Evidence                                                                                                                                          |
+| --- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Ingest application consumers import the publisher interface without importing the adapter module.          | Inspect imports in `server.ts`, `connection.ts`, and `test-publisher.ts`; no old port re-export remains.                                          |
+| 2   | Handler and storage port contain no MongoDB aggregation expressions or `StateUpdate` dependency.           | Inspect `handler.ts` and `store-port.ts`; builder imports appear only in the adapter and builder tests.                                           |
+| 3   | The state write remains one conditional operation, with unchanged expression, options, and error behavior. | Review moved builder against its previous version and review `store.ts`; run real-service integration tests.                                      |
+| 4   | Duplicate and stale events have no repeated effect or stale overwrite.                                     | Pipeline P2 and P3; processing consumer integration suite.                                                                                        |
+| 5   | Section ordering, session ordering, and parallel device processing remain correct.                         | Pipeline P4, P5, and P6; multiple-consumer scenarios in processing integration suite.                                                             |
+| 6   | Handler retry, abort, partial-write repair, and final verdict semantics are unchanged.                     | Existing handler tests with semantic port arguments; processing consumer integration suite.                                                       |
+| 7   | Every downstream consumer compiles, including integration harness wrappers.                                | Root `pnpm typecheck`.                                                                                                                            |
+| 8   | Repository checks pass and documentation reflects the new boundary.                                        | `pnpm lint && pnpm typecheck && pnpm test`; targeted formatting check of touched files; reviewed spec amendments.                                 |
+| 9   | The adapter preserves the supplied received timestamp in both the updated section and `lastEvent`.         | Extended C13 in `test/integration/processing-consumer.test.ts` asserts the fixed value after real MongoDB persistence and partial-write recovery. |
 
 ## Test Plan and prerequisites
 
