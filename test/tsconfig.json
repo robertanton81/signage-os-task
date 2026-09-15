@@ -1,0 +1,17 @@
+{
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "noEmit": true
+  },
+  "include": ["**/*.ts"],
+  "references": [
+    { "path": "../packages/shared" },
+    { "path": "../apps/ingest" },
+    { "path": "../apps/processing" },
+    { "path": "../apps/emulator" }
+  ]
+}

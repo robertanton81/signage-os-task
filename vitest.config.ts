@@ -20,21 +20,25 @@ export default defineConfig({
             '{apps,packages}/*/src/**/*.test.ts',
             // The pure helpers of the Compose check script (scripts/compose-check-lib.mjs).
             'scripts/**/*.test.mjs',
+            // The integration harness's own pure logic (the seeded load generator).
+            'test/harness/**/*.test.ts',
           ],
         },
       },
       {
-        // Real RabbitMQ + MongoDB from docker compose; longer timeouts, one file at a time.
-        // Empty until step 7; the unit project must never pass with zero tests, so the
-        // allowance is scoped here and removed when the first integration file lands.
+        // Real RabbitMQ + MongoDB from docker-compose.test.yml, started and removed by the global
+        // setup (integration spec, decisions 5, 8 and 15). After the unit project: the
+        // heartbeat-timed scenarios must not share the CPU with its workers. Files run one at a
+        // time because pause, restart and the memory alarm are broker-wide.
         extends: true,
         test: {
           name: 'integration',
-          include: ['{apps,packages}/*/test/integration/**/*.test.ts'],
-          passWithNoTests: true,
+          include: ['test/integration/**/*.test.ts'],
+          globalSetup: ['test/harness/global-setup.ts'],
+          sequence: { groupOrder: 1 },
+          fileParallelism: false,
           testTimeout: 30_000,
           hookTimeout: 60_000,
-          fileParallelism: false,
         },
       },
     ],

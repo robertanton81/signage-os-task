@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -b",
+    "typecheck": "tsc -b tsconfig.json test/tsconfig.json",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
@@ -21,12 +21,17 @@
   },
   "devDependencies": {
     "@eslint/js": "catalog:",
+    "@telemetry/shared": "workspace:*",
     "@types/node": "catalog:",
+    "@types/ws": "catalog:",
+    "amqplib": "catalog:",
     "eslint": "catalog:",
     "eslint-config-prettier": "catalog:",
+    "mongodb": "catalog:",
     "prettier": "catalog:",
     "typescript": "catalog:",
     "typescript-eslint": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "ws": "catalog:"
   }
 }
