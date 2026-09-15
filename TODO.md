@@ -110,7 +110,7 @@ Hotovo 2026-09-14 podle `docs/specs/2026-09-14-docker-compose-design.md` a `docs
 
 ## 7. Integrační testy
 
-Hotovo 2026-09-15 podle `docs/specs/2026-09-14-integration-tests-design.md` a `docs/plans/2026-09-15-integration-tests-plan.md` (18 commitů `d5d858d..`, 25 integračních testů ve 3 souborech nad skutečným RabbitMQ 4.3 a MongoDB 8.0 z `docker-compose.test.yml`, plus 26 unit testů harnessu (generátor zátěže, parser konfigurace Compose, zachytávání logů, orákulum koncového stavu); celkem 931 testů). Testovací stack (projekt `telemetry-test`, porty 5673/15673/27018) spouští a odstraňuje `globalSetup` projektu `integration`; každý test má vlastní virtual host a databázi. Celá integrační sada trvala 68 s (měřeno 2026-09-15); `pnpm test:unit` běží bez Dockeru.
+Hotovo 2026-09-15 podle `docs/specs/2026-09-14-integration-tests-design.md` a `docs/plans/2026-09-15-integration-tests-plan.md` (19 commitů `d5d858d..`, 25 integračních testů ve 3 souborech nad skutečným RabbitMQ 4.3 a MongoDB 8.0 z `docker-compose.test.yml`, plus 26 unit testů harnessu (generátor zátěže, parser konfigurace Compose, zachytávání logů, orákulum koncového stavu); celkem 931 testů). Testovací stack (projekt `telemetry-test`, porty 5673/15673/27018) spouští a odstraňuje `globalSetup` projektu `integration`; každý test má vlastní virtual host a databázi. Celá integrační sada trvala 68 s (měřeno 2026-09-15); `pnpm test:unit` běží bez Dockeru. CI: `.github/workflows/ci.yml` (GitHub Actions, ubuntu-latest) spouští format:check, lint, typecheck a `pnpm test` včetně integračních testů.
 
 - [x] Infrastruktura pro integrační testy nad skutečnými instancemi MongoDB a RabbitMQ (oddělená od vývojového běhu). Vývojový stack fixuje název projektu Compose `telemetry`, názvy front a publikované porty 15672 a 27017, takže testy potřebují jiný název projektu nebo vlastní Compose soubor (compose spec 2026-09-14, sekce Scaling).
 - [x] Test: zpráva projde z ingestu přes RabbitMQ do MongoDB.
@@ -122,7 +122,7 @@ Hotovo 2026-09-15 podle `docs/specs/2026-09-14-integration-tests-design.md` a `d
 - [x] Test: ingest publisher proti skutečnému RabbitMQ — restart brokeru s připojenými zařízeními (znovupublikace nepotvrzených zpráv), smazaná fronta (return → recyklace → nová deklarace topologie), blokované spojení (resource alarm), SIGTERM s připojenými zařízeními, zamrzlý broker (`docker pause`: heartbeat timeout → znovupublikace všech nepotvrzených zpráv) (ingest spec 2026-09-13, rozhodnutí 25).
 - [x] Test: processing consumer proti skutečnému RabbitMQ a MongoDB — dvanáct scénářů skriptovaného běhu: normální tok, duplicita, pořadí uvnitř sekce i napříč sekcemi, restart session, dvě instance, poison zprávy, zastavená a zamrzlá MongoDB (pauza a obnovení konzumace), restart brokeru, SIGTERM s rozpracovanými zprávami, špatné přihlašovací údaje (processing spec 2026-09-13, rozhodnutí 27). Navíc zastavení s čekající registrací konzumenta u zamrzlého brokeru — scénář C11c (integration spec 2026-09-14, rozhodnutí 24), doplněný po opravě `stop()` z 2026-09-14.
 - [x] Zapojit integrační testy do rootového `test` skriptu.
-- [ ] Volitelně: CI pipeline pro automatický běh testů.
+- [x] Volitelně: CI pipeline pro automatický běh testů.
 
 ## 8. Dokumentace (README.md)
 

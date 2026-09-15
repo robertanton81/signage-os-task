@@ -1,0 +1,27 @@
+# Format, lint, typecheck, unit and integration tests on every push and pull request. The
+# integration project starts its own RabbitMQ and MongoDB from docker-compose.test.yml through the
+# vitest global setup; GitHub's Ubuntu runner ships Docker Engine and Compose above the floors the
+# Compose spec set (Engine 25, Compose 2.20.2).
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      # No `version` input: the action reads `packageManager` from package.json.
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format:check
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - run: pnpm test
