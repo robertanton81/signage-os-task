@@ -229,11 +229,18 @@ export function spawnService(
     ['--experimental-transform-types', '--import', hooks, main],
     { env: variables, stdio: ['ignore', 'pipe', 'pipe'] },
   );
-  env.undo(() => {
+  // 'close', not 'exit': 'exit' can fire while stdout still holds the last lines.
+  const closed = new Promise<Exit>((resolve) => {
+    child.once('close', (code, signal) => {
+      resolve({ code, signal });
+    });
+  });
+  env.undo(async () => {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill('SIGKILL');
+      // SIGKILL cannot be caught, so the end is prompt; nothing of the child outlives its test.
+      await closed;
     }
-    return Promise.resolve();
   }, `${app} child SIGKILL`);
   const logs = new LogCapture(env.signal);
   let pending = '';
@@ -254,12 +261,6 @@ export function spawnService(
   });
   child.once('error', (error) => {
     diagnostics += `[spawn error] ${error.message}\n`;
-  });
-  // 'close', not 'exit': 'exit' can fire while stdout still holds the last lines.
-  const closed = new Promise<Exit>((resolve) => {
-    child.once('close', (code, signal) => {
-      resolve({ code, signal });
-    });
   });
   const allDiagnostics = (): string => `${diagnostics}${logs.diagnostics()}`;
   return {

@@ -11,6 +11,10 @@ declare module 'vitest' {
   }
 }
 
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 /**
  * Starts the test stack before the first integration file and removes it after the last one
  * (integration spec, decision 5). Vitest calls this only when at least one integration test is
@@ -33,8 +37,14 @@ export default async function setup(project: TestProject): Promise<() => Promise
     project.provide('stack', parseComposeConfig(await compose(['config', '--format', 'json'])));
   } catch (error) {
     // A stack this run started must not outlive a failure of the steps after the `up`; the
-    // original error is the one reported.
-    await teardown().catch(() => undefined);
+    // original error is the one reported, and a teardown that fails too is named next to it.
+    try {
+      await teardown();
+    } catch (teardownError) {
+      throw new Error(`${messageOf(error)}; the teardown failed too: ${messageOf(teardownError)}`, {
+        cause: teardownError,
+      });
+    }
     throw error;
   }
   return teardown;

@@ -14,6 +14,7 @@ import {
   TELEMETRY_QUEUE_OPTIONS,
   TELEMETRY_ROUTING_KEY,
   messageIdentity,
+  settleWithin,
   type AlertDocument,
   type CountersPayload,
   type DeviceStateDocument,
@@ -32,7 +33,7 @@ import type { WithId } from 'mongodb';
 import { toPublishArgs, type PublishArgs } from '../../apps/ingest/src/amqp-message.js';
 import { connectTestDevice, type TestDevice } from '../../apps/ingest/src/test-device.js';
 import type { StorePort, StoreWatcher } from '../../apps/processing/src/store.js';
-import type { TestEnvironment } from './environment.js';
+import { HARNESS_TIMEOUT_MS, describeError, type TestEnvironment } from './environment.js';
 import type { Expected } from './load.js';
 
 /** Two session ids inside the contract's window; B is the later session (P5). */
@@ -144,10 +145,14 @@ function confirmed(channel: ConfirmChannel, args: PublishArgs): Promise<void> {
  * One connection and one confirm channel on the test virtual host, no recovery (integration spec,
  * decision 24): a test that restarts the broker opens a new publisher afterwards. `close()` resolves
  * at once when the connection has already seen its `close` event, because a `close()` after that
- * rejects (measured after a broker restart).
+ * rejects (measured after a broker restart). The connect and the close are bounded.
  */
 export async function openDirectPublisher(env: TestEnvironment): Promise<DirectPublisher> {
-  const model = await amqpConnect(env.amqpUrl);
+  const model = await amqpConnect(env.amqpUrl, { timeout: HARNESS_TIMEOUT_MS }).catch(
+    (error: unknown) => {
+      throw new Error(`direct publisher connect: ${describeError(error)}`);
+    },
+  );
   let gone = false;
   model.on('error', () => {
     // The `close` event that follows is what matters; the listener keeps the error from throwing.
@@ -165,7 +170,7 @@ export async function openDirectPublisher(env: TestEnvironment): Promise<DirectP
       return;
     }
     gone = true;
-    await model.close();
+    await settleWithin(model.close(), HARNESS_TIMEOUT_MS);
   }, 'direct publisher close');
   return {
     publish: (message, receivedAt = Date.now()) =>
@@ -228,6 +233,9 @@ export function holdInserts(env: TestEnvironment): InsertGate {
     release();
     return Promise.resolve();
   }, 'release held inserts');
+  // A test that ends while the gate is held: the abort comes before the instance's stop in
+  // `dispose()`, so the held handlers finish instead of running into the stop's drain budget.
+  env.signal.addEventListener('abort', release, { once: true });
   return {
     wrap: (store) => ({
       insertEvent: async (doc) => {

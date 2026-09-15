@@ -66,22 +66,23 @@ type Recovery = {
   done: boolean;
 };
 
-/** Server selection of the harness's own client, and its connection close. */
-const HARNESS_TIMEOUT_MS = 5_000;
+/** The harness's own connects and closes: the AMQP connect and close, the MongoDB server selection and close. */
+export const HARNESS_TIMEOUT_MS = 5_000;
 /** How long `dispose()` waits for an in-flight fault command; an aborted command settles at once. */
 const IN_FLIGHT_SETTLE_MS = 5_000;
 /** One recovery's bound inside `dispose()`, under the 60 s hook budget. */
 const RECOVERY_TIMEOUT_MS = 50_000;
 
-function userinfo(user: string, password: string): string {
+function userinfo({ user, password }: { user: string; password: string }): string {
   return `${encodeURIComponent(user)}:${encodeURIComponent(password)}`;
 }
 
 function mongoUrlFor(stack: TestStack, password: string): string {
-  return `mongodb://${userinfo(stack.mongodb.user, password)}@${stack.host}:${String(stack.mongoPort)}/?authSource=admin`;
+  return `mongodb://${userinfo({ user: stack.mongodb.user, password })}@${stack.host}:${String(stack.mongoPort)}/?authSource=admin`;
 }
 
-function describeError(error: unknown): string {
+/** An error's message with any `user:password@` removed: what reaches the reporter. */
+export function describeError(error: unknown): string {
   return redactUserinfo(error instanceof Error ? error.message : String(error));
 }
 
@@ -115,7 +116,7 @@ class Environment implements TestEnvironment {
   }) {
     this.name = name;
     this.dbName = name;
-    this.amqpUrl = `amqp://${userinfo(stack.rabbitmq.user, stack.rabbitmq.password)}@${stack.host}:${String(stack.amqpPort)}/${encodeURIComponent(name)}`;
+    this.amqpUrl = `amqp://${userinfo(stack.rabbitmq)}@${stack.host}:${String(stack.amqpPort)}/${encodeURIComponent(name)}`;
     this.mongoUrl = mongoUrlFor(stack, stack.mongodb.password);
     this.wrongMongoUrl = mongoUrlFor(stack, `${stack.mongodb.password}-wrong`);
     this.db = mongo.db(name);
@@ -135,17 +136,23 @@ class Environment implements TestEnvironment {
 
   amqp(): Promise<ChannelModel> {
     if (this.#model === undefined) {
-      const opening = amqpConnect(this.amqpUrl).then((model) => {
-        model.on('error', () => {
-          // The `close` that follows drops the connection; the listener keeps the error from throwing.
-        });
-        model.once('close', () => {
-          if (this.#model === opening) {
-            this.#model = undefined;
-          }
-        });
-        return model;
-      });
+      const opening = amqpConnect(this.amqpUrl, { timeout: HARNESS_TIMEOUT_MS }).then(
+        (model) => {
+          model.on('error', () => {
+            // The `close` that follows drops the connection; the listener keeps the error from throwing.
+          });
+          model.once('close', () => {
+            if (this.#model === opening) {
+              this.#model = undefined;
+            }
+          });
+          return model;
+        },
+        (error: unknown) => {
+          // A driver's message may quote the URL; the userinfo never reaches the reporter.
+          throw new Error(`amqp connect: ${describeError(error)}`);
+        },
+      );
       opening.catch(() => {
         if (this.#model === opening) {
           this.#model = undefined;
@@ -283,7 +290,10 @@ export async function createEnvironment(): Promise<TestEnvironment> {
   } catch (error) {
     await mongo?.close().catch(() => undefined);
     await client.deleteVhost(name).catch(() => undefined);
-    throw error;
+    // Reported without the URL a driver may quote in its message. The raw error is not attached
+    // as the cause on purpose: the reporter prints a cause as it is.
+    // eslint-disable-next-line preserve-caught-error -- the cause would carry the URL, see above
+    throw new Error(`createEnvironment ${name}: ${describeError(error)}`);
   }
 }
 
