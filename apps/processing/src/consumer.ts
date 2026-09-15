@@ -219,7 +219,8 @@ export class AmqpConsumer {
 
   /**
    * Decision 20: cancel first, drain up to the budget, then abort what is left and close the link,
-   * channel first so that the last acknowledgements take effect (T70).
+   * channel first, which keeps the acknowledgements the channel received from being lost with the
+   * connection (T70; not a proof that the queue applied them, see `#closeLink`).
    * Resolves within `shutdownTimeoutMs + AMQP_CLOSE_TIMEOUT_MS` (the cancel's own bound runs
    * inside the drain, not after it), with the link closed unless the broker never answered the
    * close: then the socket is left to the heartbeat timeout, or to the process exit. Called once;
@@ -807,10 +808,14 @@ export class AmqpConsumer {
 
   /**
    * The `close_link` effect: closes the channel and waits for its close-ok, then the connection,
-   * both within one `AMQP_CLOSE_TIMEOUT_MS` (decision 20, amended 2026-09-15). The broker applies a
-   * channel's frames in order, so the close-ok proves that every acknowledgement sent before it
-   * took effect; a connection close right after the last acknowledgement lost it, and the broker
-   * redelivered that message to the next instance (T70, measured with C11b).
+   * both within one `AMQP_CLOSE_TIMEOUT_MS` (decision 20, amended 2026-09-15). The close-ok proves
+   * that the channel received every acknowledgement sent before it — a connection close right
+   * after the last acknowledgement lost it, and the broker redelivered that message (T70, measured
+   * with C11b). It does not prove that the queue applied them: the quorum-queue client stashes
+   * settles above 32 pending commands until a Ra `applied` event and never flushes the stash at a
+   * channel close (RabbitMQ 4.3.5, `rabbit_fifo_client.erl`, `SOFT_LIMIT`), so a graceful stop
+   * stays at-least-once and the next instance absorbs the redeliveries as duplicates (16 of 50
+   * measured on the 2-vCPU CI runner, none on a fast machine).
    */
   async #closeLink(): Promise<void> {
     const link = this.#link;
