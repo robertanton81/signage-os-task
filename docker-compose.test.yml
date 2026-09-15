@@ -24,7 +24,9 @@ services:
       - '127.0.0.1:${TEST_AMQP_PORT:-5673}:5672'
       - '127.0.0.1:${TEST_RABBITMQ_MANAGEMENT_PORT:-15673}:15672'
     healthcheck:
-      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'check_port_connectivity']
+      # As the `rabbitmq` user, for the reason given in docker-compose.yml: a probe that runs as
+      # root before the server has written the Erlang cookie leaves a file the server cannot read.
+      test: ['CMD', 'gosu', 'rabbitmq', 'rabbitmq-diagnostics', '-q', 'check_port_connectivity']
       interval: 10s
       timeout: 10s
       retries: 5

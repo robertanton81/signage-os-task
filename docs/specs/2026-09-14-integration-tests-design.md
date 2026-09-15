@@ -236,7 +236,8 @@ services:
       - '127.0.0.1:${TEST_AMQP_PORT:-5673}:5672'
       - '127.0.0.1:${TEST_RABBITMQ_MANAGEMENT_PORT:-15673}:15672'
     healthcheck:
-      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'check_port_connectivity']
+      # As the `rabbitmq` user (amendment of 2026-09-15; compose spec, decision 10).
+      test: ['CMD', 'gosu', 'rabbitmq', 'rabbitmq-diagnostics', '-q', 'check_port_connectivity']
       interval: 10s
       timeout: 10s
       retries: 5
@@ -388,7 +389,11 @@ had removed the container and its output with it. The `logs` call is bounded (30
 failure is swallowed, so it can never replace the error that led to it. Proven locally by a
 `docker compose create rabbitmq` followed by `docker update --memory 24m` and a test run: the
 `up` reports `exited (137)`, the logs print (MongoDB's lines; the killed VM had not written one
-yet, at 64 MB neither), the teardown removes both containers.
+yet, at 64 MB neither), the teardown removes both containers. The first CI run with the dump
+gave the cause: `Error when reading /var/lib/rabbitmq/.erlang.cookie: eacces` in `auth:init` —
+the health check's probe, run as root by `docker exec`, had created the cookie before the server
+did; fixed in both Compose files by running the probe as the `rabbitmq` user (compose spec,
+decision 10).
 
 ### The per-test environment (`test/harness/environment.ts`)
 

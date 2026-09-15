@@ -26,8 +26,12 @@ services:
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     healthcheck:
-      # Stage-4 node health check: opens a TCP connection to every enabled listener.
-      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'check_port_connectivity']
+      # Stage-4 node health check: opens a TCP connection to every enabled listener. Run as the
+      # `rabbitmq` user: `docker exec` runs as root in this image, and a probe that runs before the
+      # server has written /var/lib/rabbitmq/.erlang.cookie creates it as root, mode 0400, which
+      # the server then cannot read (`eacces` in `auth:init`, exit 1). Seen on the CI runner with
+      # `start_interval: 1s`; reproduced with one probe run as root in a fresh container.
+      test: ['CMD', 'gosu', 'rabbitmq', 'rabbitmq-diagnostics', '-q', 'check_port_connectivity']
       interval: 10s
       timeout: 10s
       retries: 5
