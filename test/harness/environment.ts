@@ -18,6 +18,8 @@ import {
 } from './wait.js';
 
 export type RecoveryAction = (signal: AbortSignal) => Promise<void>;
+/** A resource of a disposed environment that still exists (see `TestEnvironment.leftoversOf`). */
+export type Leftover = 'vhost' | 'database';
 /** Runs a registered recovery until it has succeeded once (see `TestEnvironment.undo`). */
 export type Recover = () => Promise<void>;
 
@@ -56,6 +58,11 @@ export type TestEnvironment = {
   waitFor<T>(predicate: () => T | Promise<T>, options?: WaitOptions): Promise<Truthy<T>>;
   awaitAcked(instance: AckCounter, count: number): Promise<void>;
   awaitEndState(expected: Expected, timeoutMs?: number): Promise<void>;
+  /**
+   * Which of another environment's resources still exist, by its name: the observation of the
+   * recovery tests (H1–H7) after they disposed that environment.
+   */
+  leftoversOf(name: string): Promise<Leftover[]>;
   dispose(): Promise<void>;
 };
 
@@ -190,6 +197,18 @@ class Environment implements TestEnvironment {
       signal: this.#signal,
       ...(timeoutMs === undefined ? {} : { timeoutMs }),
     });
+  }
+
+  async leftoversOf(name: string): Promise<Leftover[]> {
+    const leftovers: Leftover[] = [];
+    if (await this.#client.hasVhost(name)) {
+      leftovers.push('vhost');
+    }
+    const { databases } = await this.#mongo.db('admin').admin().listDatabases({ nameOnly: true });
+    if (databases.some((database) => database.name === name)) {
+      leftovers.push('database');
+    }
+    return leftovers;
   }
 
   /**

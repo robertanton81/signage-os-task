@@ -38,6 +38,8 @@ export type ManagementApi = {
 export type ManagementClient = {
   createVhost(name: string): Promise<void>;
   deleteVhost(name: string): Promise<void>;
+  /** `GET /api/vhosts/{name}`: 200 while the virtual host exists, 404 once it is deleted. */
+  hasVhost(name: string): Promise<boolean>;
   grantAll(vhost: string, user: string): Promise<void>;
   vhost(name: string): ManagementApi;
 };
@@ -136,6 +138,9 @@ export function createManagementClient({
     deleteVhost: async (name) => {
       await call({ method: 'DELETE', path: `/vhosts/${encode(name)}`, ok: [204] });
     },
+    hasVhost: async (name) =>
+      (await call({ method: 'GET', path: `/vhosts/${encode(name)}`, ok: [200, 404] })).status ===
+      200,
     grantAll: async (name, grantee) => {
       await call({
         method: 'PUT',
