@@ -130,6 +130,8 @@ Hotovo 2026-09-15 podle `docs/specs/2026-09-14-integration-tests-design.md` a `d
 
 Hotovo 2026-09-15: `README.md` (česky) vychází ze specifikací v `docs/specs/` a z kódu. Příkazy z README byly ověřeny proti vývojovému stacku: start jedním příkazem, `node scripts/compose-check.mjs` ve výchozím režimu i s `--scale --down` (vše PASS, zařízení rozdělená [5, 5] mezi dvě instance ingest), 200 zařízení, všechny čtyři chaos scénáře, dotazy do MongoDB, readiness, zastavení a reset testovacího stacku. `pnpm test` prošel: 953 testů ve 49 souborech.
 
+Doplněno 2026-09-15 večer: README nově obsahuje sekci „Ověření výsledků“. Hodnotitel si v ní sám ověří, že výsledný stav v MongoDB je správný i po duplicitách, prohozeném pořadí a restartech zařízení. Kontrolu provádí nový skript `scripts/state-check.js` (mongosh, jen čtení): unikátní index, žádná identita uložená dvakrát, každá sekce `device_state` odpovídá nejnovější uložené události svého typu a každá chybová diagnostika má právě svůj alert. Důkaz, že skript umí selhat, je v compose spec (dodatek z 2026-09-15 k rozhodnutí 25). README zároveň upozorňuje na dvě pasti Compose změřené téhož dne: proměnná zapsaná před příkazem platí jen pro ten příkaz a `up` bez `--scale` vrátí škálované služby na jednu instanci. Po přidání instancí ingestu rozdělí zařízení `docker compose restart emulator`.
+
 - [x] Stručný popis architektury a toku dat.
 - [x] Diagram architektury (textový diagram přímo v README stačí).
 - [x] Návod na spuštění systému a testů. Uvést minimální verze na hostu: Docker Engine 25 a Docker Compose 2.20.2 (health checky používají `start_interval`; compose spec 2026-09-14, rozhodnutí 13); Node ani pnpm na hostu nejsou potřeba, ověřovací skript je čistý Node bez závislostí.

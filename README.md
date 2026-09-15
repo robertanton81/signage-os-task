@@ -51,7 +51,9 @@ docker compose down -v    # zastavení a smazání dat
 docker compose up -d --build --wait --scale ingest=2 --scale processing=3
 ```
 
-Zařízení při připojení náhodně vybírají adresu ingestu z DNS. Existující spojení se nepřesouvají. Instance processingu čtou společnou frontu; konzistenci zajišťuje MongoDB. Emulátor škálujte počtem zařízení, ne pomocí `--scale emulator`: repliky by měly stejná id zařízení.
+Zařízení při připojení náhodně vybírají adresu ingestu z DNS. Existující spojení se nepřesouvají; na nové instance ingestu je rozdělí `docker compose restart emulator`. Instance processingu čtou společnou frontu; konzistenci zajišťuje MongoDB. Emulátor škálujte počtem zařízení, ne pomocí `--scale emulator`: repliky by měly stejná id zařízení.
+
+Každý další `docker compose up` musí `--scale` zopakovat, jinak vrátí počet instancí na 1.
 
 Ověření škálování (potřebuje jen Node.js 24, bez instalace závislostí):
 
@@ -63,7 +65,7 @@ Skript stack sám spustí se 2 instancemi ingestu a 3 instancemi processingu. Ov
 
 ## Konfigurace emulátoru
 
-Proměnné nastavte v shellu nebo `.env`. Neplatná konfigurace ukončí start s chybou.
+Proměnné nastavte přes `export` v shellu nebo v `.env`. Proměnná zapsaná přímo před příkazem platí jen pro ten příkaz a další `docker compose up` bez ní vrátí výchozí hodnotu. Neplatná konfigurace ukončí start s chybou.
 
 | Proměnná                     | Výchozí hodnota | Význam                                                                          |
 | ---------------------------- | --------------- | ------------------------------------------------------------------------------- |
@@ -74,8 +76,8 @@ Proměnné nastavte v shellu nebo `.env`. Neplatná konfigurace ukončí start s
 | `LOG_LEVEL`                  | `info`          | Úroveň logování všech aplikací.                                                 |
 
 ```bash
-EMULATOR_DEVICE_COUNT=200 EMULATOR_EVENT_INTERVAL_MS=500 docker compose up -d --build --wait
-EMULATOR_CHAOS=duplicate,out-of-order,disconnect,restart docker compose up -d --wait emulator
+export EMULATOR_DEVICE_COUNT=200 EMULATOR_EVENT_INTERVAL_MS=500
+docker compose up -d --wait
 ```
 
 Scénáře v `EMULATOR_CHAOS`:
@@ -87,13 +89,43 @@ Scénáře v `EMULATOR_CHAOS`:
 | `disconnect`   | Zařízení zavře spojení a znovu se připojí. Session, `seq` i neodeslané zprávy zůstávají.                                |
 | `restart`      | Simulovaný restart. Zařízení ztratí neodeslané zprávy a čítače a začne novou session s vyšším `sessionId` a `seq` od 1. |
 
-Že konzistence funguje, ukáže log processingu. `"outcome":"stale"` znamená, že uložený stav byl novější nebo stejný a zpráva ho nezměnila. `"duplicate":true` znamená, že událost už byla uložená.
+Další proměnné a výchozí hodnoty jsou v [.env.example](.env.example). Pro změnu dalších voleb emulátoru je přidejte do jeho `environment` v `docker-compose.yml`; Compose je automaticky nepředává.
+
+## Ověření výsledků
+
+Zapněte všechny scénáře. Pokud stack běží škálovaný, přidejte k `up` stejné `--scale`.
+
+```bash
+export EMULATOR_CHAOS=duplicate,out-of-order,disconnect,restart
+docker compose up -d --wait
+```
+
+Během běhu ukáže log processingu, že duplicity a starší zprávy stav nezměnily. `"outcome":"stale"` znamená, že uložený stav byl novější nebo stejný a zpráva ho nezměnila. `"duplicate":true` znamená, že událost už byla uložená.
 
 ```bash
 docker compose logs processing | grep -E '"outcome":"stale"|"duplicate":true'
 ```
 
-Další proměnné a výchozí hodnoty jsou v [.env.example](.env.example). Pro změnu dalších voleb emulátoru je přidejte do jeho `environment` v `docker-compose.yml`; Compose je automaticky nepředává.
+Výsledný stav v MongoDB ověří skript `scripts/state-check.js`. Potřebuje klidný systém: zastavte emulátor a počkejte, až fronta `telemetry.events` ukáže `messages` 0 ve dvou čteních po sobě s odstupem 10 s. Počty v `rabbitmqctl` se zpožďují až o 5 s.
+
+```bash
+docker compose stop emulator
+docker compose exec -T rabbitmq rabbitmqctl list_queues --quiet name messages consumers
+docker compose exec -T mongodb sh -c 'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin telemetry /dev/stdin' < scripts/state-check.js
+```
+
+Skript bere přihlašovací údaje z prostředí kontejneru MongoDB. Pro každou kontrolu vypíše `PASS` nebo `FAIL` a při chybě skončí s kódem 1:
+
+- unikátní index brání druhému uložení události se stejnou identitou `(deviceId, sessionId, seq)` a žádná identita není uložená dvakrát,
+- každá sekce `device_state` obsahuje hodnoty nejnovější uložené události svého typu,
+- každá uložená chybová diagnostika má alert se svou identitou a žádný jiný alert neexistuje.
+
+Stav jednoho zařízení a opětovné spuštění emulátoru:
+
+```bash
+docker compose exec -T mongodb sh -c 'mongosh --quiet -u "$MONGO_INITDB_ROOT_USERNAME" -p "$MONGO_INITDB_ROOT_PASSWORD" --authenticationDatabase admin telemetry --eval "db.device_state.findOne({ _id: \"dev-0001\" })"'
+docker compose start emulator
+```
 
 ## Testy
 
