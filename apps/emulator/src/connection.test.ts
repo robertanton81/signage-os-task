@@ -361,10 +361,15 @@ describe('DeviceConnection', () => {
       },
       { timeout: 4_000 },
     );
-    const errors = lines().filter((line) => line.msg === 'device socket error');
-    expect(errors.map((line) => (line.err as { message: string }).message)).toEqual([
-      'Opening handshake has timed out',
-    ]);
+    // `backoff` is re-entered after every failed attempt, and Full Jitter can schedule the next
+    // attempt almost at once (`backoffDelay`), so on a slow runner a second handshake can time out
+    // before `vi.waitFor` polls (two lines on the CI runner, 2026-09-15). The first attempt is
+    // the subject; every attempt must have ended the same way.
+    const reasons = lines()
+      .filter((line) => line.msg === 'device socket error')
+      .map((line) => (line.err as { message: string }).message);
+    expect(reasons.length).toBeGreaterThanOrEqual(1);
+    expect(new Set(reasons)).toEqual(new Set(['Opening handshake has timed out']));
   });
 
   it('closes within its own deadline even when the peer never responds', async () => {
