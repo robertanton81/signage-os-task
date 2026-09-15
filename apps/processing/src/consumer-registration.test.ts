@@ -403,9 +403,10 @@ describe('AmqpConsumer against a broker that stops answering', () => {
       'shutdown ended before the link closed',
       'amqp connection close',
     ]);
+    // The channel close had the whole shared budget; the connection close what was left of it: none.
     expect(warnings[1]).toMatchObject({ outcome: 'timed_out', timeoutMs: AMQP_CLOSE_TIMEOUT_MS });
     expect(warnings[2]).toMatchObject({ generation, timeoutMs: AMQP_CLOSE_TIMEOUT_MS });
-    expect(warnings[3]).toMatchObject({ outcome: 'timed_out', timeoutMs: AMQP_CLOSE_TIMEOUT_MS });
+    expect(warnings[3]).toMatchObject({ outcome: 'timed_out', timeoutMs: 0 });
   });
 
   it('ignores the link ending after stop() gave up on the close', async () => {

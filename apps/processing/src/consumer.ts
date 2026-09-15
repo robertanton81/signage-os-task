@@ -829,12 +829,10 @@ export class AmqpConsumer {
   /** `channel.close()` and its close-ok, within what is left of the budget. Never rejects. */
   async #closeChannel(link: Link, deadline: number): Promise<void> {
     const fields = { generation: link.handle.generation };
-    // Through a microtask: a channel the broker closed already throws at once, and that close was
-    // the real event, so the throw is an outcome here, not an error.
-    const result = await settleWithin(
-      Promise.resolve().then(() => link.channel.close()),
-      remainingMs(deadline),
-    );
+    // A channel the broker closed already rejects (amqplib promisifies the close); that close was
+    // the real event, so the rejection is an outcome here, not an error.
+    const budgetMs = remainingMs(deadline);
+    const result = await settleWithin(link.channel.close(), budgetMs);
     switch (result.outcome) {
       case 'resolved':
         this.#logger.debug({ ...fields, outcome: 'closed' }, 'amqp channel close');
@@ -847,7 +845,7 @@ export class AmqpConsumer {
         return;
       case 'timed_out':
         this.#logger.warn(
-          { ...fields, outcome: 'timed_out', timeoutMs: AMQP_CLOSE_TIMEOUT_MS },
+          { ...fields, outcome: 'timed_out', timeoutMs: budgetMs },
           'amqp channel close',
         );
         return;
@@ -873,7 +871,9 @@ export class AmqpConsumer {
       this.#logger.debug({ ...fields, outcome: 'skipped' }, 'amqp connection close');
       return;
     }
-    const result = await settleWithin(handle.model.close(), remainingMs(deadline));
+    // What is left of the shared budget: 0 after a channel close that used it all up.
+    const budgetMs = remainingMs(deadline);
+    const result = await settleWithin(handle.model.close(), budgetMs);
     switch (result.outcome) {
       case 'resolved':
         this.#logger.debug({ ...fields, outcome: 'closed' }, 'amqp connection close');
@@ -886,7 +886,7 @@ export class AmqpConsumer {
         return;
       case 'timed_out':
         this.#logger.warn(
-          { ...fields, outcome: 'timed_out', timeoutMs: AMQP_CLOSE_TIMEOUT_MS },
+          { ...fields, outcome: 'timed_out', timeoutMs: budgetMs },
           'amqp connection close',
         );
         return;
