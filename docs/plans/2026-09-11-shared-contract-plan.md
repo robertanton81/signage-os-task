@@ -1,4 +1,4 @@
-> **STATUS: SHIPPED 2026-09-12.** Landed as 10 commits `7185588..6aaef6e` on `main`. The unchecked `- [ ]` boxes below are historical — work is done. **Do not re-execute this plan.** If you're modifying the message contract, the storage document types, the broker/collection names, the logger or the config loader, work directly in `packages/shared/src/`.
+> **STATUS: SHIPPED 2026-09-12.** Landed as 10 commits `0ab2763..e47f946` on `main`. The unchecked `- [ ]` boxes below are historical — work is done. **Do not re-execute this plan.** If you're modifying the message contract, the storage document types, the broker/collection names, the logger or the config loader, work directly in `packages/shared/src/`.
 >
 > **Plan-vs-reality corrections discovered during execution:**
 >
@@ -13,7 +13,7 @@
 > - An app that exports an inferred logger binding fails with **TS2883** (TS 6's successor to TS2742): "The inferred type of 'x' cannot be named without a reference to 'Logger' from '.../pino/pino.js'". Verified by probe in `apps/ingest`. Fix: annotate as `Logger` imported from `@telemetry/shared`, never add `pino` to an app's dependencies.
 > - A failed `expectTypeOf` assertion surfaces as `TS2554: Expected 1 arguments, but got 0`, not as a readable message. When `tsc -b` reports that on a `.test-d.ts` line, the type assertion failed.
 >
-> **Corrections applied during review (commits `0fe6e7d`, `aa04972`, `0d46cc1`, `0cb0631`, `84d54c5`, `4035b24`, `f958d0c`, `3128a1c`):**
+> **Corrections applied during review (commits `3c8fa87`, `07c52f7`, `6830bf2`, `7eef541`, `ae98b05`, `95bc841`, `45f918b`, `40db6a9`):**
 >
 > - **`message.test.ts`: the invalid-input table grew from 23 rows to 33.** The plan's Task 2 header claimed the table proved `sessionId >= 1`; it did not — `sessionId` had only a wrong-type case. Added `sessionId` 0 and fractional, the `DIAGNOSTIC_CODE_MAX_LENGTH` upper bound, unknown-key rejection for the metrics/counters/diagnostic payloads (only `status` was covered, so three of four `z.strictObject`s were unproven), plus the missing sibling constraints on `cpuPercent`/`ramPercent`/`operationsTotal`/`uptimeMs`.
 > - **`framing.ts`: silent data loss fixed.** `push()` threw `FrameTooLongError` after already decoding valid frames from the same chunk, and those frames were unrecoverable — reproduced with `FrameDecoder(8).push('ok\nXXXXXXXXXXXXX')`, which lost `'ok'`. `FrameTooLongError` now carries `readonly frames: readonly string[]`. Tests added for the exact-limit boundary, decoder reuse after both throw sites, cross-instance isolation, the caller-buffer aliasing hazard, and a three-chunk split.
@@ -1518,9 +1518,9 @@ Every library call below traces to one of these; the shared-contract spec's Rese
 | 7   | Log lines are JSON with `service`, `hostname`, ISO `time`; message-scoped lines carry `deviceId`, `sessionId`, `seq`; levels filter       | `packages/shared/src/logger.test.ts`                                                                                                                |
 | 8   | A missing or invalid variable throws `ConfigError` naming it; all problems are listed at once; empty means unset                          | `packages/shared/src/config.test.ts`                                                                                                                |
 | 9   | `.env.example` lists exactly the 19 variables of the shared-contract spec's configuration table, each with an empty value                 | `grep -c '^[A-Z_]*=$' .env.example` prints `19`; `sed 's/=.*/=<set>/' .env.example` shows no value                                                  |
-| 10  | Only two runtime dependencies were added, pinned in the catalog                                                                           | `pnpm ls --filter @telemetry/shared --depth 0` lists `pino 10.3.1` and `zod 4.6.2`; `git diff 2562a2b -- pnpm-workspace.yaml` shows two added lines |
+| 10  | Only two runtime dependencies were added, pinned in the catalog                                                                           | `pnpm ls --filter @telemetry/shared --depth 0` lists `pino 10.3.1` and `zod 4.6.2`; `git diff a852018 -- pnpm-workspace.yaml` shows two added lines |
 | 11  | The whole workspace is green                                                                                                              | `pnpm lint && pnpm typecheck && pnpm test && pnpm format:check`                                                                                     |
-| 12  | The commit history is ten small imperative commits without assistant attribution                                                          | `git log --format='%s%n%b' 2562a2b..HEAD` shows no `Co-Authored-By` and no mention of Claude or an AI tool                                          |
+| 12  | The commit history is ten small imperative commits without assistant attribution                                                          | `git log --format='%s%n%b' a852018..HEAD` shows no `Co-Authored-By` and no mention of Claude or an AI tool                                          |
 
 ## Test Plan
 
@@ -1535,6 +1535,6 @@ Every library call below traces to one of these; the shared-contract spec's Rese
 If interrupted mid-implementation, resume by:
 
 1. Read this plan and the shared-contract spec.
-2. Run `git log --oneline 2562a2b..HEAD` and match the subjects against the task commits above.
+2. Run `git log --oneline a852018..HEAD` and match the subjects against the task commits above.
 3. Run the scoped verify command; if it is red, the current task's files are on disk but not finished — complete that task.
 4. Pick up from the first task without a commit. The barrel `packages/shared/src/index.ts` must export every module committed so far.

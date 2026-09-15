@@ -1,6 +1,6 @@
-> **STATUS: SHIPPED 2026-09-13.** Landed as four commits: the plan `8931fc4`, then one commit per task — `7c1c57f` (Task 1), `2d49902` (Task 2) and `02d3c17` (Task 3). The unchecked `- [ ]` boxes below are historical; the work is done. **Do not re-execute this plan.** If you are changing the emulator, work directly in `apps/emulator/src/`.
+> **STATUS: SHIPPED 2026-09-13.** Landed as four commits: the plan `0145604`, then one commit per task — `34f75aa` (Task 1), `e2fd497` (Task 2) and `4913afb` (Task 3). The unchecked `- [ ]` boxes below are historical; the work is done. **Do not re-execute this plan.** If you are changing the emulator, work directly in `apps/emulator/src/`.
 >
-> **Verification (2026-09-13, at `02d3c17`):** `pnpm lint && pnpm typecheck && pnpm test` passed with 25 test files and 489 tests; 104 of them are the emulator's, 4 of those new. Each regression test was red before its fix: `seq` 3604 received twice (Task 1), only `shutting down` logged (Task 2), and `vi.waitFor` timing out with one status received (Task 3). Criteria 6 and 8 against the built code:
+> **Verification (2026-09-13, at `4913afb`):** `pnpm lint && pnpm typecheck && pnpm test` passed with 25 test files and 489 tests; 104 of them are the emulator's, 4 of those new. Each regression test was red before its fix: `seq` 3604 received twice (Task 1), only `shutting down` logged (Task 2), and `vi.waitFor` timing out with one status received (Task 3). Criteria 6 and 8 against the built code:
 >
 > - 10 000 queued frames arrived as 10 000, with 0 duplicates.
 > - With ingest unreachable, the process exited 1 011 and 1 016 ms after SIGTERM (budget 1 000 ms), after the loss warning, the summary and `stopped`.
@@ -58,8 +58,8 @@
 
 Another agent is running `docs/plans/2026-09-13-ingest-plan.md` on `main` in this same checkout.
 
-- **What it did while this plan was written:** the range `bed8a4a..0486273` (the commits since this session started) holds six commits, `4f05c2e` to `0486273`. `git diff --stat bed8a4a..0486273` shows that they changed only files in `apps/ingest`.
-- **What it did earlier:** it edited the emulator spec and moved `backoff.ts` out of `apps/emulator` (`1080187`).
+- **What it did while this plan was written:** the range `abd398a..ffb7e2f` (the commits since this session started) holds six commits, `bcef6df` to `ffb7e2f`. `git diff --stat abd398a..ffb7e2f` shows that they changed only files in `apps/ingest`.
+- **What it did earlier:** it edited the emulator spec and moved `backoff.ts` out of `apps/emulator` (`3946133`).
 - **What it still has to do:** its Task 14 will edit `TODO.md` and the consistency spec's trade-off list. This plan edits both files too.
 
 Three rules follow. Every task applies them.
@@ -72,7 +72,7 @@ The two agents' edits to the consistency spec's trade-off list do not overlap. T
 
 ## Verification of the review's claims (2026-09-13, current checkout)
 
-The review inspected the checkout at `2d3a3f3`. No emulator file changed after that commit: the last commits that touch `apps/emulator` are `1080187` and `c52412b`, both older, and every line the review cites still matches.
+The review inspected the checkout at `306ac24`. No emulator file changed after that commit: the last commits that touch `apps/emulator` are `3946133` and `ae82329`, both older, and every line the review cites still matches.
 
 Each claim was reproduced before this plan was written. The checks ran against the compiled production modules (`pnpm typecheck` builds `dist/`). Each planned fix was then applied to a scratch copy of `dist/`, and the same checks ran again. The scripts are in `.local/research/2026-09-13-delivery-probe-*.mjs`.
 
@@ -772,7 +772,7 @@ Run the verify command: every test passes.
 | 4   | A lost `status` is replaced during continuous metrics traffic, without a state transition                                                                                          | `DeviceClient › replaces a lost status during continuous metrics traffic, without a state transition`: red after Task 3 Step 1, green after Step 2                                                                                                                      |
 | 5   | The refresh sends one `status` per interval, never two inside one                                                                                                                  | `DeviceClient › sends one status per heartbeat interval while ticks keep flowing, never more`                                                                                                                                                                           |
 | 6   | The review's reproductions pass against the built code                                                                                                                             | `pnpm build`, then the `.local/research/2026-09-13-delivery-probe-*.mjs` scripts against `apps/emulator/dist`: 0 duplicate frames; a lifetime of at least the budget, with the warning and `stopped`; statuses keep arriving                                            |
-| 7   | No regressions                                                                                                                                                                     | `pnpm lint && pnpm typecheck && pnpm test`. The emulator suite goes from 100 to 104 tests (Task 1 adds 2, Task 2 adds 1, Task 3 replaces 1 test with 2); shared (225) and ingest keep passing (109 at `18bcd73`; the ingest count grows with the other agent's commits) |
+| 7   | No regressions                                                                                                                                                                     | `pnpm lint && pnpm typecheck && pnpm test`. The emulator suite goes from 100 to 104 tests (Task 1 adds 2, Task 2 adds 1, Task 3 replaces 1 test with 2); shared (225) and ingest keep passing (109 at `f59c597`; the ingest count grows with the other agent's commits) |
 | 8   | Standing emulator criterion: device count and event rate stay configurable through the environment                                                                                 | Run the built emulator against a local sink for 2 s twice — 2 devices at 200 ms, then 4 devices at 100 ms — and compare the distinct device ids and the lines per device                                                                                                |
 | 9   | The specs and `.env.example` describe the shipped behaviour                                                                                                                        | `grep -rn "re-armed on every enqueue\|idle-only\|without another event" docs/specs .env.example` finds nothing                                                                                                                                                          |
 

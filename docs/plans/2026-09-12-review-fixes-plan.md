@@ -1,4 +1,4 @@
-> **STATUS: SHIPPED 2026-09-12.** Landed as 10 commits, `7b27df8..b88abae`. The unchecked `- [ ]` boxes below are historical — the work is done. **Do not re-execute this plan.** If you are changing the shared package, work directly in `packages/shared/src/`; if you are changing the design, work in `docs/specs/`.
+> **STATUS: SHIPPED 2026-09-12.** Landed as 10 commits, `01dd326..8658b8d`. The unchecked `- [ ]` boxes below are historical — the work is done. **Do not re-execute this plan.** If you are changing the shared package, work directly in `packages/shared/src/`; if you are changing the design, work in `docs/specs/`.
 >
 > **Plan-vs-reality corrections discovered during execution:**
 >
@@ -21,7 +21,7 @@
 > - Task 5 predicted seven failing rows; five failed. `z.int()` already restricts to the safe-integer range, so the two safe-integer rows never were red.
 > - Task 6 predicted two failing tests; one failed. V8 never produced a `JSON.parse` message longer than 86 characters across six input shapes, because it truncates the input it quotes — that cap can only be exercised by stubbing the parser.
 >
-> **Corrections applied during review (commit `7b27df8`):** the trade-off table carried two rows numbered `T10`, the second superseding the first; decision 27 justified itself with `modifiedCount`, which the `findOneAndUpdate` path decision 29 introduced does not return; and the failure row for two instances racing on a new device stated the colliding-upsert conversion as certain, although it is documented for `update` and not for `findAndModify`.
+> **Corrections applied during review (commit `01dd326`):** the trade-off table carried two rows numbered `T10`, the second superseding the first; decision 27 justified itself with `modifiedCount`, which the `findOneAndUpdate` path decision 29 introduced does not return; and the failure row for two instances racing on a new device stated the colliding-upsert conversion as certain, although it is documented for `update` and not for `findAndModify`.
 >
 > **Deferrals worth tracking** (candidates for the README's "known limits" and for steps 3–7):
 >
@@ -3304,7 +3304,7 @@ export default defineConfig({
 | 12  | `unique` and `durable` are literally `true` in the shared definitions; `DeviceStateDocument` has `lastEvent?` and exactly one section per event type                                                                                  | `pnpm --filter @telemetry/shared typecheck` compiles `contract.test-d.ts`; removing `unique: true` fails it with TS2344                                                                                                            |
 | 13  | A broken unit `include` glob fails `pnpm test`; the empty integration project does not                                                                                                                                                | Task 10 step 3 (probe, not committed)                                                                                                                                                                                              |
 | 14  | The whole workspace is green                                                                                                                                                                                                          | `pnpm lint && pnpm typecheck && pnpm test && pnpm format:check` — 151 tests                                                                                                                                                        |
-| 15  | Ten small imperative commits without assistant attribution                                                                                                                                                                            | `git log --format='%s%n%b' fd964f6..HEAD` shows no `Co-Authored-By` and no mention of Claude or an AI tool                                                                                                                         |
+| 15  | Ten small imperative commits without assistant attribution                                                                                                                                                                            | `git log --format='%s%n%b' 3b84bf7..HEAD` shows no `Co-Authored-By` and no mention of Claude or an AI tool                                                                                                                         |
 
 ## Test Plan
 
@@ -3318,6 +3318,6 @@ export default defineConfig({
 If interrupted mid-implementation, resume by:
 
 1. Read this plan.
-2. Run `git log --oneline fd964f6..HEAD` and match the subjects against the task commits above (one commit per task, in order).
+2. Run `git log --oneline 3b84bf7..HEAD` and match the subjects against the task commits above (one commit per task, in order).
 3. Run the scoped verify command; if it is red, the current task's files are on disk but not finished — re-copy that task's files from this plan and re-run.
 4. Pick up from the first task without a commit. Tasks 2–9 are independent of each other; Task 8 must land before any app imports `EVENTS_IDENTITY_INDEX_SPEC` or the `*_OPTIONS` constants (step 4 and step 5).
