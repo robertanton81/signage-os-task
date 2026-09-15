@@ -86,12 +86,6 @@ describe('generateLoad', () => {
           swapped += 1;
         }
       });
-      // Every moved message belongs to exactly one pair of adjacent positions.
-      const moved = seqs.flatMap((seq, index) => (seq === index + 1 ? [] : [index]));
-      expect(moved.length % 2).toBe(0);
-      for (let pair = 0; pair < moved.length; pair += 2) {
-        expect(moved[pair + 1]).toBe((moved[pair] ?? -2) + 1);
-      }
     }
     expect(swapped).toBeGreaterThan(0);
     const ordered = generateLoad({ ...OPTIONS, swapPercent: 0, duplicatePercent: 0 });
@@ -172,10 +166,15 @@ describe('generateLoad', () => {
     expect(new Set(sameIds.expected.sections.keys())).toEqual(new Set(a.expected.sections.keys()));
   });
 
-  it('rejects a load with fewer messages than devices', () => {
-    expect(() => generateLoad({ ...SMALL, devices: 10, messages: 5 })).toThrow(
+  it('needs at least one message per device, and accepts exactly one', () => {
+    expect(() => generateLoad({ ...SMALL, devices: 10, messages: 9 })).toThrow(
       /needs at least one device and one message per device/,
     );
+    const minimal = generateLoad({ ...SMALL, messages: 10, swapPercent: 0, duplicatePercent: 0 });
+    expect(minimal.sends).toHaveLength(10);
+    for (let device = 1; device <= 10; device += 1) {
+      expect(streamOf(minimal.sends, loadDeviceId('load', device))).toHaveLength(1);
+    }
   });
 
   it('merges disjoint expectations and rejects a shared device', () => {

@@ -44,25 +44,20 @@ describe('parseComposeConfig', () => {
     );
   });
 
-  it('rejects a host port that is not a positive integer', () => {
-    for (const published of ['0', 'abc', '27018.5']) {
-      const mongodb = { ...MONGODB, ports: [{ target: 27017, published }] };
-      expect(() => parseComposeConfig(render({ rabbitmq: RABBITMQ, mongodb }))).toThrow(
-        /^docker compose config: service mongodb publishes no host port for 27017$/,
-      );
-    }
+  it.each(['0', 'abc', '27018.5'])('rejects the host port %s', (published) => {
+    const mongodb = { ...MONGODB, ports: [{ target: 27017, published }] };
+    expect(() => parseComposeConfig(render({ rabbitmq: RABBITMQ, mongodb }))).toThrow(
+      /^docker compose config: service mongodb publishes no host port for 27017$/,
+    );
   });
 
-  it('names a missing or empty credential without printing any value', () => {
-    const missing = { ...MONGODB, environment: { MONGO_INITDB_ROOT_USERNAME: 'user-m' } };
-    const empty = {
-      ...MONGODB,
-      environment: { ...MONGODB.environment, MONGO_INITDB_ROOT_PASSWORD: '' },
-    };
-    for (const mongodb of [missing, empty]) {
-      expect(() => parseComposeConfig(render({ rabbitmq: RABBITMQ, mongodb }))).toThrow(
-        /^docker compose config: service mongodb has no MONGO_INITDB_ROOT_PASSWORD$/,
-      );
-    }
+  it.each([
+    { label: 'missing', environment: { MONGO_INITDB_ROOT_USERNAME: 'user-m' } },
+    { label: 'empty', environment: { ...MONGODB.environment, MONGO_INITDB_ROOT_PASSWORD: '' } },
+  ])('names a $label credential without printing any value', ({ environment }) => {
+    const mongodb = { ...MONGODB, environment };
+    expect(() => parseComposeConfig(render({ rabbitmq: RABBITMQ, mongodb }))).toThrow(
+      /^docker compose config: service mongodb has no MONGO_INITDB_ROOT_PASSWORD$/,
+    );
   });
 });

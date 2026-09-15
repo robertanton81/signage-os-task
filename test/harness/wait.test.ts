@@ -55,6 +55,8 @@ function completeReadout(): EndStateReadout {
   };
 }
 
+const ONE_SECTION = '0 identities missing, 1 sections not at their key, 0 alerts missing';
+
 describe('missingFromReadout', () => {
   it('is empty when every identity, section key and alert is present', () => {
     expect(missingFromReadout(completeReadout(), expectedFixture())).toBe('');
@@ -67,32 +69,34 @@ describe('missingFromReadout', () => {
     );
   });
 
-  it('counts a section below its key, one of another session, and one without a document', () => {
-    const below: EndStateReadout = {
+  it('counts a section below its key', () => {
+    const readout: EndStateReadout = {
       ...completeReadout(),
       states: [
         { _id: 'd-1', status: key(1), diagnostic: key(1) },
         { _id: 'd-2', metrics: key(1) },
       ],
     };
-    expect(missingFromReadout(below, expectedFixture())).toBe(
-      '0 identities missing, 1 sections not at their key, 0 alerts missing',
-    );
-    const otherSession: EndStateReadout = {
+    expect(missingFromReadout(readout, expectedFixture())).toBe(ONE_SECTION);
+  });
+
+  it('counts a section of another session with the same seq', () => {
+    const readout: EndStateReadout = {
       ...completeReadout(),
       states: [
         { _id: 'd-1', status: key(1), diagnostic: { sessionId: SESSION + 1, seq: 2 } },
         { _id: 'd-2', metrics: key(1) },
       ],
     };
-    expect(missingFromReadout(otherSession, expectedFixture())).toBe(
-      '0 identities missing, 1 sections not at their key, 0 alerts missing',
-    );
-    const noDocument: EndStateReadout = {
+    expect(missingFromReadout(readout, expectedFixture())).toBe(ONE_SECTION);
+  });
+
+  it('counts every expected section of a device without a document', () => {
+    const readout: EndStateReadout = {
       ...completeReadout(),
       states: [{ _id: 'd-2', metrics: key(1) }],
     };
-    expect(missingFromReadout(noDocument, expectedFixture())).toBe(
+    expect(missingFromReadout(readout, expectedFixture())).toBe(
       '0 identities missing, 2 sections not at their key, 0 alerts missing',
     );
   });
@@ -126,16 +130,27 @@ describe('LogCapture', () => {
     vi.useRealTimers();
   });
 
-  it('keeps JSON lines and puts anything else into the diagnostics', () => {
+  it('keeps JSON lines in order and puts anything else into the diagnostics', () => {
     const capture = new LogCapture(new AbortController().signal);
     capture.pushText('{"level":30,"msg":"a"}\n');
     capture.pushText('   ');
     capture.pushText('not json');
-    capture.destination().write('{"level":40,"msg":"b","reason":"x"}');
+    capture.pushText('{"level":40,"msg":"b","reason":"x"}');
     expect(capture.messages()).toEqual(['a', 'b']);
     expect(capture.find(byMsg('b'))).toMatchObject({ level: 40, reason: 'x' });
-    expect(capture.filter((line) => line.level >= 40)).toHaveLength(1);
     expect(capture.diagnostics()).toBe('[not JSON] not json\n');
+  });
+
+  it('writes through the pino destination and filters by a predicate', () => {
+    const capture = new LogCapture(new AbortController().signal);
+    capture.destination().write('{"level":30,"msg":"a"}');
+    capture.destination().write('{"level":40,"msg":"b"}');
+    expect(capture.filter((line) => line.level >= 40).map((line) => line.msg)).toEqual(['b']);
+  });
+
+  it('returns a copy of the lines', () => {
+    const capture = new LogCapture(new AbortController().signal);
+    capture.push({ level: 30, msg: 'a' });
     expect(capture.lines()).toEqual(capture.lines());
     expect(capture.lines()).not.toBe(capture.lines());
   });
@@ -166,7 +181,7 @@ describe('LogCapture', () => {
     await assertion;
   });
 
-  it('rejects at once when the signal aborts, and when it is aborted already', async () => {
+  it('rejects at once when the signal aborts while waiting', async () => {
     const controller = new AbortController();
     const capture = new LogCapture(controller.signal);
     capture.push({ level: 30, msg: 'seen' });
@@ -174,6 +189,12 @@ describe('LogCapture', () => {
     const assertion = expect(waiting).rejects.toThrow('log wait aborted; last lines: seen');
     controller.abort();
     await assertion;
+  });
+
+  it('rejects at once when the signal is aborted already', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const capture = new LogCapture(controller.signal);
     await expect(capture.waitForLine(byMsg('never'))).rejects.toThrow('log wait aborted');
   });
 });
