@@ -140,9 +140,11 @@ Hotovo 2026-09-15: `README.md` (česky) vychází ze specifikací v `docs/specs/
 
 ## 9. Finální kontrola a odevzdání
 
-- [ ] Čistý clone repozitáře → spuštění systému jedním příkazem → systém běží, testy projdou.
+Kontrola 2026-09-15 nad `ca306cd` (čistý clone z GitHubu; do `a5b1f23` se změnilo jen formátování plánu). `node scripts/compose-check.mjs` z clone bez `.env`: vše PASS. `pnpm install --frozen-lockfile`, `pnpm lint`, `pnpm typecheck` a `pnpm test` v clone prošly (953 testů ve 49 souborech). V repozitáři není sledovaný `.env`, `.DS_Store`, `node_modules`, `dist` ani klíč; shody vzorů pro hesla jsou jen testovací URL pro redakci logu. CI na `ca306cd` padlo na `format:check` neformátovaného plánu; opraveno commitem `a5b1f23`. Revize historie (206 commitů) našla slabé předměty: `3a3cf3a` a `95f4d98` s prefixem Conventional Commits, `06e2387` a `0f8a53f` s obecným předmětem, `18e3e09` malým písmenem a `ca306cd`, jehož předmět slibuje změnu kódu, kterou commit neobsahuje. Oprava by přepsala publikovanou historii, rozhoduje autor.
+
+- [x] Čistý clone repozitáře → spuštění systému jedním příkazem → systém běží, testy projdou.
 - [ ] Projít commit historii: smysluplná, bez balastu, odpovídá standardní týmové práci.
-- [ ] Zkontrolovat, že v repozitáři nejsou secrets ani zbytečné soubory (`.env` s hodnotami, `.DS_Store`, `node_modules`).
+- [x] Zkontrolovat, že v repozitáři nejsou secrets ani zbytečné soubory (`.env` s hodnotami, `.DS_Store`, `node_modules`).
 - [ ] Odevzdat odkaz na repozitář.
 
 ## 10. Příprava na technickou diskuzi
