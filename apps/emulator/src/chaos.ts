@@ -87,15 +87,10 @@ export class ChaosPolicy {
   /**
    * What to enqueue now, in order.
    *
-   * Three branches, evaluated in this order:
-   * 1. `emit` is the message, doubled when `duplicate` fires.
-   * 2. If something is already held, release it behind `emit` — the swap completes, and the
-   *    incoming message is never held in turn, so the reordering depth is always exactly one.
-   * 3. Otherwise, if `out-of-order` fires, hold `emit` and enqueue nothing yet.
-   *
-   * `metrics` is produced on every tick, so branch 2 always runs on the next tick and a held
-   * message can never be stranded. `flushHeld` exists only for the two cases where there is no
-   * next tick: a deliberate disconnect, and shutdown.
+   * A message already held is always released here, behind `emit` — so the reordering depth is
+   * always exactly one, and since this runs on every tick, a held message can never be stranded.
+   * `flushHeld` exists only for the two cases with no next tick: a deliberate disconnect, and
+   * shutdown.
    */
   apply(message: TelemetryMessage): TelemetryMessage[] {
     const emit = this.#fires('duplicate') ? [message, message] : [message];

@@ -32,7 +32,6 @@ describe('toPublishArgs', () => {
         headers: { 'x-received-at': RECEIVED_AT },
       },
     });
-    // The body is the validated message re-encoded (decision 6), and it decodes back unchanged.
     expect(content.toString('utf8')).toBe(JSON.stringify(message));
     expect(decodeTelemetryMessage(content.toString('utf8'))).toEqual({ ok: true, message });
   });

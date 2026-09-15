@@ -8,7 +8,7 @@ import { startTestSink } from './test-sink.js';
 const MAIN = fileURLToPath(new URL('./main.ts', import.meta.url));
 const SOURCE_HOOKS = fileURLToPath(new URL('./test-source-hooks.ts', import.meta.url));
 
-/** Short, so the test is quick, and still far above the 3 ms the unfixed process lived. */
+/** Short enough to keep the test quick, yet far above the few milliseconds a shutdown that skipped its own drain would take. */
 const SHUTDOWN_BUDGET_MS = 500;
 const LOSS_WARNING = 'shutdown timed out with messages still queued';
 /** A shutdown that could not deliver: drain step 4, the final summary, the lifecycle's last line. */
@@ -124,9 +124,9 @@ afterEach(() => {
 
 describe('emulator process', () => {
   it('reports what it could not deliver before it exits, when ingest stays unreachable', async () => {
-    // A separate process on purpose. The defect was about what keeps Node running, and inside
-    // vitest the runner's own handles keep a worker alive, so the in-process fleet test passed
-    // while a real emulator exited 3 ms after SIGTERM: no loss warning, no summary, exit code 0.
+    // A separate process on purpose: what keeps Node running is exactly what is under test here,
+    // and vitest's own runner keeps a worker alive through its own handles — which would mask a
+    // real process exiting right after SIGTERM with no loss warning, no summary, exit code 0.
     const port = await refusedPort();
     const emulator = startEmulator({
       INGEST_HOSTS: `127.0.0.1:${String(port)}`,

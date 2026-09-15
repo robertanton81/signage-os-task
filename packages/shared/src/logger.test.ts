@@ -273,7 +273,7 @@ describe('rejectedMessageLogger', () => {
   });
 });
 
-// Three holes the 2026-09-12 review found in the redaction above, each reproduced here first.
+// Three gaps in the redaction above that the earlier tests did not exercise, each reproduced first.
 describe('createLogger redaction, review follow-up', () => {
   const url = 'amqp://user:p4ssw0rd@rabbitmq:5672';
 

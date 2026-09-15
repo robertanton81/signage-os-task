@@ -24,7 +24,6 @@ export type BackoffInput = {
  */
 export function backoffDelay({ attempt, baseMs, maxMs, random }: BackoffInput): number {
   // No clamp on the exponent is needed: past about 2 ** 1024 the product becomes `Infinity`, and
-  // `Math.min(maxMs, Infinity)` is still `maxMs`. An earlier version clamped it and claimed to
-  // prevent a `NaN`, which it never could — dead code with a wrong reason attached.
+  // `Math.min(maxMs, Infinity)` is still `maxMs`.
   return random() * Math.min(maxMs, baseMs * 2 ** attempt);
 }

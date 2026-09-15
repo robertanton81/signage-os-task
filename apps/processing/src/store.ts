@@ -193,11 +193,10 @@ export class MongoStore implements StorePort, StoreWatcher {
   }
 
   /**
-   * The one conditional write (consistency spec, decision 29): the pipeline evaluates the freshness
-   * guard on the server, the upsert creates the document for a new device, and the returned
-   * pre-update document tells the handler the outcome. A duplicate key error is the racing first
-   * insert of a new device; the handler retries it once. The pipeline is built outside the `try`:
-   * a builder bug is a programmer error, not a driver failure to classify.
+   * The one conditional write (consistency spec, decision 29): the freshness guard is evaluated on
+   * the server against the document as it is at update time, so two concurrent writers cannot both
+   * win with a stale key. The pipeline is built outside the `try`: a builder bug is a programmer
+   * error, not a driver failure to classify.
    */
   async applyState(
     message: TelemetryMessage,

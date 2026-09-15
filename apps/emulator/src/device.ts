@@ -31,10 +31,10 @@ export type DeviceStats = {
  * Returns the entries it wrote, in order.
  *
  * Peek, write, and remove only what the connection took. Shifting first and pushing back on a
- * refused write would put the entry behind anything enqueued in between — the emulator would become
- * the source of the reordering the tests attribute to the broker. Removing on `true` is exact
- * because `write()` counts the message that filled the send buffer as taken; the first version
- * counted it as refused, kept it at the head and wrote it a second time after the buffer drained.
+ * refused write would put the entry behind anything enqueued in between — the emulator would
+ * become the source of the reordering the tests attribute to the broker. Removing on `true` is
+ * exact because `write()` counts the message that filled the send buffer as taken: treating that
+ * case as refused would leave it at the head and send it a second time once the buffer drains.
  */
 export function pumpOutbox(outbox: Outbox, connection: DeviceConnection): OutboxEntry[] {
   const written: OutboxEntry[] = [];

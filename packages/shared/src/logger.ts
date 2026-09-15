@@ -108,7 +108,6 @@ function safeRedactObject(value: unknown): Record<string, unknown> {
   }
 }
 
-/** The error found at `err` on a merging object, if any. */
 function errorOf(value: unknown): Error | undefined {
   if (value instanceof Error) {
     return value;

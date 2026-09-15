@@ -8,7 +8,7 @@ const envelope = {
   occurredAt: 1_700_000_000_500,
 } as const;
 
-/** One valid message per event type for this package's tests. Not exported: later packages build their own fixtures. */
+/** One valid message per event type for this package's tests. Kept out of the package's public exports in index.ts — later packages build their own fixtures. */
 export const exampleMessages: { [T in TelemetryEventType]: TelemetryMessageOf<T> } = {
   status: { ...envelope, type: 'status', payload: { state: 'online' } },
   metrics: {

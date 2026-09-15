@@ -191,8 +191,8 @@ describe('Fleet', () => {
   });
 
   it('sends nothing after the farewell even when the heartbeat period fits in the drain', async () => {
-    // The regression test for the stopped flag: without it, prepareShutdown's push re-arms the
-    // heartbeat timer that shutdown just cleared, and a status lands after the offline farewell.
+    // Guards the stopped flag: without it, prepareShutdown's push re-arms the heartbeat timer
+    // that shutdown just cleared, and a status lands after the offline farewell.
     const target = await sink();
     const { logger } = collectingLogger();
     const running = fleet({

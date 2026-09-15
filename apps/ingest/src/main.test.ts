@@ -211,7 +211,6 @@ describe('ingest process', () => {
     expect
       .soft(lines.find((line) => line.msg === 'shutdown drain ended at its budget'))
       .toMatchObject({ openConnections: 1, unconfirmed: 0 });
-    // Alive for the whole drain, then a clean exit.
     expect.soft(lifetimeMs).toBeGreaterThanOrEqual(SHUTDOWN_BUDGET_MS);
     expect.soft(exit).toEqual({ code: 0, signal: null });
   }, 15_000);

@@ -220,12 +220,11 @@ describe('DeviceClient', () => {
   });
 
   it('queues nothing after the farewell, however long the drain takes', async () => {
-    // The regression test for the stopped flag. `prepareShutdown` enqueues the farewell, which is
-    // a status, and every status re-arms the heartbeat timer — so without the guard a slow drain
-    // gives that timer time to fire and put a `status` on the wire after the `offline` farewell.
-    // The fleet-level test cannot catch this: there the drain finishes in under a millisecond, so
-    // the timer never gets the chance. Here the wait is explicit and covers several heartbeat
-    // periods.
+    // Guards the stopped flag: `prepareShutdown` enqueues the farewell, which is a status, and
+    // every status re-arms the heartbeat timer — so without the guard a slow drain gives that
+    // timer time to fire and put a `status` on the wire after the `offline` farewell. The
+    // fleet-level test cannot catch this: there the drain finishes in under a millisecond, so the
+    // timer never gets the chance. Here the wait is explicit and covers several heartbeat periods.
     const target = await sink();
     const device = client(configFor(target.port, { EMULATOR_HEARTBEAT_MS: '20' }));
     device.start();
@@ -452,8 +451,8 @@ describe('pumpOutbox', () => {
 
     const seqs = target.messages().map((line) => (JSON.parse(line) as TelemetryMessage).seq);
     expect(seqs).toEqual(Array.from({ length: queued }, (_unused, index) => index + 1));
-    // The count the pump reports — what `DeviceClient` adds to `stats.written` — matches the
-    // frames on the wire. Before the fix the two differed: each stop added a frame, not a count.
+    // The count the pump reports — what `DeviceClient` adds to `stats.written` — must match the
+    // frames on the wire, which a double-write under backpressure would break.
     expect(written).toBe(seqs.length);
   }, 20_000);
 });

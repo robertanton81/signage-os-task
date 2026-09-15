@@ -412,9 +412,9 @@ describe('DeviceConnection', () => {
 
     const connection = connect(port);
     connection.start();
-    // `backoff` and nothing else. The earlier version of this test accepted `resolving` and
-    // `connecting` as well, which `start()` reaches synchronously — so it returned on the first
-    // poll and would have passed identically with the backoff transition deleted.
+    // `backoff` and nothing else: accepting `resolving` or `connecting` too would make this pass
+    // on the first poll, since `start()` reaches them synchronously — identically whether or not
+    // the backoff transition ever ran.
     await vi.waitFor(() => {
       expect(connection.state.name).toBe('backoff');
     });

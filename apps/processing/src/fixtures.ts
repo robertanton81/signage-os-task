@@ -56,7 +56,7 @@ const eventMeta = {
   processedAt: EXAMPLE_PROCESSED_AT,
 } as const;
 
-/** The `events` document each example message produces with the two clocks above. */
+/** The `events` document each example message produces. */
 export const exampleEvents: { [T in TelemetryEventType]: Extract<EventDocument, { type: T }> } = {
   status: { ...eventMeta, seq: 1, type: 'status', payload: { state: 'online' } },
   metrics: {

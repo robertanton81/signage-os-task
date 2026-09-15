@@ -50,7 +50,7 @@ export class Ledger {
     return [...this.#entries.values()].filter((entry) => entry.state.name === 'pending');
   }
 
-  /** Marks an entry sent on a channel generation. An entry already sent is not counted twice. */
+  /** An entry already sent is not counted twice. */
   markSent(entry: LedgerEntry, generation: number): void {
     if (!this.#entries.has(entry.id)) {
       return;
