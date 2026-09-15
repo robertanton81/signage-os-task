@@ -113,12 +113,7 @@ describe('processDelivery', () => {
 
     expect(store.calls).toEqual([
       { method: 'insertEvent', doc: exampleEvents.status },
-      {
-        method: 'applyState',
-        deviceId: 'dev-0001',
-        message: exampleMessages.status,
-        receivedAt: EXAMPLE_RECEIVED_AT,
-      },
+      { method: 'applyState', message: exampleMessages.status, receivedAt: EXAMPLE_RECEIVED_AT },
     ]);
     expect(result).toEqual({
       verdict: 'ack',
@@ -272,12 +267,7 @@ describe('processDelivery', () => {
         method: 'insertEvent',
         doc: { ...exampleEvents.status, receivedAt: EXAMPLE_PROCESSED_AT },
       },
-      {
-        method: 'applyState',
-        deviceId: 'dev-0001',
-        message: exampleMessages.status,
-        receivedAt: EXAMPLE_PROCESSED_AT,
-      },
+      { method: 'applyState', message: exampleMessages.status, receivedAt: EXAMPLE_PROCESSED_AT },
     ]);
     expect(lines.find((line) => line.msg === 'received-at header missing')).toMatchObject({
       ...identityFields,

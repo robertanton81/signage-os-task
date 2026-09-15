@@ -11,7 +11,7 @@ import type { StorePort } from './store.js';
 
 export type StoreCall =
   | { method: 'insertEvent'; doc: EventDocument }
-  | { method: 'applyState'; deviceId: string; message: TelemetryMessage; receivedAt: number }
+  | { method: 'applyState'; message: TelemetryMessage; receivedAt: number }
   | { method: 'insertAlert'; doc: AlertDocument };
 
 export type StoreMethod = StoreCall['method'];
@@ -58,12 +58,7 @@ export class TestStore implements StorePort {
     message: TelemetryMessage,
     receivedAt: number,
   ): Promise<{ result: 'updated'; before: DeviceStateDocument | null } | { result: 'duplicate' }> {
-    const answer = this.#record({
-      method: 'applyState',
-      deviceId: message.deviceId,
-      message,
-      receivedAt,
-    });
+    const answer = this.#record({ method: 'applyState', message, receivedAt });
     switch (answer.outcome) {
       case 'ok':
         return Promise.resolve({ result: 'updated', before: answer.before ?? null });
