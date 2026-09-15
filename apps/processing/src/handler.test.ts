@@ -18,7 +18,6 @@ import {
   exampleState,
 } from './fixtures.js';
 import { processDelivery, type HandlerInput, type HandlerResult } from './handler.js';
-import { buildStateUpdate } from './state-update.js';
 import { TestStore, type StoreMethod } from './test-store.js';
 
 type LogLine = { msg: string; level: number; [field: string]: unknown };
@@ -117,7 +116,8 @@ describe('processDelivery', () => {
       {
         method: 'applyState',
         deviceId: 'dev-0001',
-        update: buildStateUpdate(exampleMessages.status, EXAMPLE_RECEIVED_AT),
+        message: exampleMessages.status,
+        receivedAt: EXAMPLE_RECEIVED_AT,
       },
     ]);
     expect(result).toEqual({
@@ -275,7 +275,8 @@ describe('processDelivery', () => {
       {
         method: 'applyState',
         deviceId: 'dev-0001',
-        update: buildStateUpdate(exampleMessages.status, EXAMPLE_PROCESSED_AT),
+        message: exampleMessages.status,
+        receivedAt: EXAMPLE_PROCESSED_AT,
       },
     ]);
     expect(lines.find((line) => line.msg === 'received-at header missing')).toMatchObject({

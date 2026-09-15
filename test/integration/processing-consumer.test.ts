@@ -240,17 +240,20 @@ describe('processing consumer against RabbitMQ and MongoDB', () => {
     const publisher = await openDirectPublisher(env);
     const message = messages('c13-device', SESSION_A).diagnostic(1, { severity: 'error' });
     const identity = messageIdentity(message);
-    await publisher.publish(message);
+    // A fixed header value: the store must write what it was given, not its own clock.
+    const receivedAt = 1_700_000_000_123;
+    await publisher.publish(message, receivedAt);
     await env.awaitAcked(processing, 1);
     // The crash: the event is stored, the state and the alert are not.
     await deleteStateDocument(env, 'c13-device');
     await deleteAlertDocument(env, identity);
-    await publisher.publish(message);
+    await publisher.publish(message, receivedAt);
     await env.awaitAcked(processing, 2);
 
     const state = await readState(env, 'c13-device');
     expect(sectionKey(state, 'diagnostic')).toEqual({ sessionId: SESSION_A, seq: 1 });
-    expect(state?.lastEvent).toMatchObject({ sessionId: SESSION_A, seq: 1 });
+    expect(state?.diagnostic?.receivedAt).toBe(receivedAt);
+    expect(state?.lastEvent).toMatchObject({ sessionId: SESSION_A, seq: 1, receivedAt });
     expect((await readAlerts(env)).map((alert) => alert._id)).toEqual([identity]);
     expect(await readEvents(env)).toHaveLength(1);
     const stats = processing.stats();

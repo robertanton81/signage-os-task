@@ -14,6 +14,7 @@ import {
   type DeviceStateDocument,
   type EventDocument,
   type Logger,
+  type TelemetryMessage,
 } from '@telemetry/shared';
 import {
   MongoClient,
@@ -28,19 +29,24 @@ import {
 } from 'mongodb';
 
 import { StoreError, type StoreFailure } from './failure.js';
-import type { StateUpdate } from './state-update.js';
+import { buildStateUpdate } from './state-update.js';
 
 /**
  * All the handler knows about MongoDB (processing spec, decision 8). Each method resolves on
  * success, resolves with the duplicate result when the server answered duplicate key error 11000,
  * and otherwise rejects with a `StoreError` carrying the structural view of the driver's error —
  * never a driver class. The handler is tested against an in-memory implementation of this port.
- * The update's filter carries the device id, so `applyState` takes the update alone.
+ * `applyState` takes the message and its `receivedAt`, not a query: the store builds the
+ * conditional update itself (amendment of 2026-09-15), so the port is shaped by what the handler
+ * knows and the in-memory store records intent, not a pipeline. `before` is the document as it was
+ * before the write, `null` when the upsert created it; `'updated'` covers a stale no-op as well, and
+ * `'duplicate'` is the racing first insert of a new device, which the handler retries once.
  */
 export type StorePort = {
   insertEvent(doc: EventDocument): Promise<'inserted' | 'duplicate'>;
   applyState(
-    update: StateUpdate,
+    message: TelemetryMessage,
+    receivedAt: number,
   ): Promise<{ result: 'updated'; before: DeviceStateDocument | null } | { result: 'duplicate' }>;
   insertAlert(doc: AlertDocument): Promise<'inserted' | 'duplicate'>;
 };
@@ -190,11 +196,14 @@ export class MongoStore implements StorePort, StoreWatcher {
    * The one conditional write (consistency spec, decision 29): the pipeline evaluates the freshness
    * guard on the server, the upsert creates the document for a new device, and the returned
    * pre-update document tells the handler the outcome. A duplicate key error is the racing first
-   * insert of a new device; the handler retries it once.
+   * insert of a new device; the handler retries it once. The pipeline is built outside the `try`:
+   * a builder bug is a programmer error, not a driver failure to classify.
    */
   async applyState(
-    update: StateUpdate,
+    message: TelemetryMessage,
+    receivedAt: number,
   ): Promise<{ result: 'updated'; before: DeviceStateDocument | null } | { result: 'duplicate' }> {
+    const update = buildStateUpdate(message, receivedAt);
     try {
       const before = await this.#state.findOneAndUpdate(update.filter, update.pipeline, {
         upsert: true,

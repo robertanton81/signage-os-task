@@ -242,7 +242,7 @@ export function holdInserts(env: TestEnvironment): InsertGate {
         await gate.promise;
         return store.insertEvent(doc);
       },
-      applyState: (update) => store.applyState(update),
+      applyState: (message, receivedAt) => store.applyState(message, receivedAt),
       insertAlert: (doc) => store.insertAlert(doc),
       watch: (watchSignal) => store.watch(watchSignal),
     }),

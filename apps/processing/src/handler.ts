@@ -12,7 +12,7 @@ import {
 
 import { decodeDelivery, type DeliveryRejectionReason } from './delivery.js';
 import { StoreError, classifyFailure, type FailureClass, type StoreFailure } from './failure.js';
-import { buildStateUpdate, classifyOutcome, detectGap, type StateOutcome } from './state-update.js';
+import { classifyOutcome, detectGap, type StateOutcome } from './state-update.js';
 import type { StorePort } from './store.js';
 
 /** Full Jitter between the transient attempts of one handler (processing spec, decision 13). */
@@ -193,14 +193,13 @@ async function runAttempt({
     }
 
     step = 'applyState';
-    const update = buildStateUpdate(message, receivedAt);
-    let applied = await store.applyState(update);
+    let applied = await store.applyState(message, receivedAt);
     if (applied.result === 'duplicate') {
       // The racing first insert of a new device: the document exists now, so once more, at once.
       if (signal.aborted) {
         return { kind: 'aborted' };
       }
-      applied = await store.applyState(update);
+      applied = await store.applyState(message, receivedAt);
     }
     if (applied.result === 'duplicate') {
       return { kind: 'failed', step, failure: STATE_COLLISION, klass: 'transient' };

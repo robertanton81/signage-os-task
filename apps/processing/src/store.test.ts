@@ -13,7 +13,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { StoreError } from './failure.js';
 import { EXAMPLE_RECEIVED_AT, exampleEvents, exampleMessages } from './fixtures.js';
-import { buildStateUpdate } from './state-update.js';
 import { MongoStore, describeMongoError, isIndexConflict } from './store.js';
 
 /**
@@ -195,9 +194,7 @@ describe('MongoStore without a database', () => {
     const { logger } = captureLogger();
     const store = await storeOnClosedPort(logger);
 
-    await expect(
-      store.applyState(buildStateUpdate(exampleMessages.status, EXAMPLE_RECEIVED_AT)),
-    ).rejects.toSatisfy(
+    await expect(store.applyState(exampleMessages.status, EXAMPLE_RECEIVED_AT)).rejects.toSatisfy(
       (error: unknown) => error instanceof StoreError && error.failure.kind === 'server_selection',
     );
   });

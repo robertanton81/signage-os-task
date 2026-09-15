@@ -87,6 +87,8 @@ Změněno 2026-09-13 podle `docs/specs/2026-09-13-websocket-transport-design.md`
 
 Hotovo 2026-09-14 podle `docs/specs/2026-09-13-processing-design.md` a `docs/plans/2026-09-13-processing-plan.md` (41 commitů `5cdd8aa..`, 288 testů processing, celkem 855). Skriptovaný běh proti RabbitMQ 4.3 a MongoDB 8.0 prošel všemi dvanácti scénáři; výsledky jsou v hlavičce plánu.
 
+Změněno 2026-09-15: `StorePort.applyState` přijímá zprávu a `receivedAt` místo hotového dotazu; pipeline MongoDB sestavuje `MongoStore` sám (`buildStateUpdate` volá adaptér, ne handler). Zápis do MongoDB ani chování se nemění; integrační test C13 navíc ověřuje, že uložený `receivedAt` odpovídá publikované hodnotě (dodatek v processing specu). Položky níže zůstávají hotové.
+
 - [x] Konzumace zpráv z RabbitMQ způsobem, který zaručí pořadí v rámci zařízení a rozloží zátěž mezi instance.
 - [x] Deduplikace podle strategie z kroku 0 – opakovaná zpráva nesmí mít žádný business efekt.
 - [x] Ukládání zpracovaných eventů do MongoDB.
