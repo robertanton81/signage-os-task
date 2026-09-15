@@ -17,6 +17,9 @@ Technologie: Node.js 24, striktní TypeScript, pnpm monorepo, RabbitMQ 4.3, Mong
 - [Datový model](#datový-model)
 - [Pořadí, deduplikace, atomicita a race conditions](#pořadí-deduplikace-atomicita-a-race-conditions)
 - [Chování při selhání](#chování-při-selhání)
+- [Známé limity a vědomé kompromisy](#známé-limity-a-vědomé-kompromisy)
+- [Co by šlo při více času doplnit nebo řešit jinak](#co-by-šlo-při-více-času-doplnit-nebo-řešit-jinak)
+- [Dokumentace návrhu](#dokumentace-návrhu)
 
 ## Architektura a tok dat
 
@@ -521,3 +524,73 @@ At-least-once znamená, že se zpráva neztratí, ale může přijít vícekrát
 | SIGTERM na processing                           | Processing zruší consumera, dokončí a potvrdí rozpracované zprávy. Po `SHUTDOWN_TIMEOUT_MS` zbylé handlery přeruší bez potvrzení a broker jejich zprávy doručí znovu. Celé zastavení včetně zavření spojení k MongoDB trvá nejvýš asi 17 s.                                                                                                                              |
 
 Každá operace se socketem, AMQP a MongoDB má timeout. Obě služby se po výpadku připojují znovu s backoffem a svůj stav hlásí přes `/readyz`.
+
+## Známé limity a vědomé kompromisy
+
+Návrh se řídí zásadou KISS: nejjednodušší řešení, které splní zadání. Každý kompromis níže je vědomý a má pojmenovanou cestu dál. Úplný seznam s odůvodněním a odkazy na rozhodnutí je v sekci „Trade-offs“ dokumentu `docs/specs/2026-09-11-telemetry-consistency-design.md`.
+
+### Vývojové přihlašovací údaje v `docker-compose.yml`
+
+`docker-compose.yml` obsahuje uživatele a heslo pro RabbitMQ a MongoDB. Jsou to vývojové zástupné hodnoty, ne tajemství:
+
+- Používají je služby tohoto stacku uvnitř sítě Docker Compose. Z hostitele jsou management UI (port 15672) a MongoDB (port 27017) dostupné jen přes loopback (`127.0.0.1`), ze sítě ne.
+- Hodnoty lze přepsat v souboru `.env` proměnnými `RABBITMQ_USER`, `RABBITMQ_PASSWORD`, `MONGODB_USER` a `MONGODB_PASSWORD`. Obě image je ale použijí jen při inicializaci prázdného volume. Změna na stacku, který už běžel, proto vyžaduje `docker compose down -v`.
+- Skenery tajemství je hlásí. To je očekávané.
+- Produkční nasazení dodá skutečné údaje z prostředí, ne ze souboru v repozitáři.
+
+### Mezi zařízením a ingestem se zprávy nepotvrzují
+
+Zařízení nedostává od ingestu potvrzení. Když instance ingestu spadne, ztratí zprávy, které přijala a broker je ještě nepotvrdil. Ztrátu přibližně omezuje okno nepotvrzených zpráv instance (`INGEST_MAX_UNCONFIRMED_TOTAL`).
+
+- Ztracená periodická zpráva (`metrics`, `counters`, `status`) nevadí. Další zpráva nese absolutní hodnotu a stav opraví. `status` se posílá nejpozději každých `EMULATOR_HEARTBEAT_MS`.
+- Ztracená diagnostika, kterou zařízení posílá jen při změně stavu, vadí. `error` se posílá jen při přechodu do přehřátí. Když se ztratí, alert chybí až do dalšího přehřátí.
+- Cesta dál: ingest by zařízení kumulativně potvrzoval „přijato do `seq`“ a zařízení by nepotvrzené zprávy poslalo znovu. Deduplikace už taková opakovaná odeslání zvládne.
+
+Zprávy se mohou ztratit i na zařízení a při zastavení. Zaplněný outbox zahodí nejstarší zprávu a zapíše varování. Simulovaný restart zařízení outbox vymaže, stejně jako skutečný restart zařízení bez trvalého úložiště. Zastavení emulátoru nebo ingestu, které nestihne všechno do `SHUTDOWN_TIMEOUT_MS`, zbytek zahodí a zapíše počty do logu.
+
+### Řízené zastavení processingu může doručit zprávy znovu
+
+Při řízeném zastavení (graceful shutdown) processing potvrdí všechny rozpracované zprávy a potom zavře kanál. Interní klient quorum fronty uvnitř brokeru RabbitMQ 4.3 ale acky odloží, když na odeslání čeká víc příkazů, než je jeho limit 32. Odložené acky při zavření kanálu neodešle. V AMQP 0-9-1 broker na ack neodpovídá, takže processing ztrátu nepozná. Fronta pak tyto zprávy doručí znovu jiné instanci.
+
+- Předání zpráv při zastavení je proto at-least-once. Znovu může přijít nejvýš jedno okno prefetch (výchozí 50 zpráv). Na CI runneru se dvěma vCPU přišlo znovu 16 z 50 zpráv.
+- Každá taková zpráva je už uložená. Další instance ji zpracuje jako `duplicate` a `stale` bez efektu. Test C11b to ověřuje.
+
+### Další kompromisy
+
+| Kompromis                                             | Co se tím ztrácí                                                                                                                                                  | Cesta dál                                                                                                             |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `sessionId` jsou hodiny zařízení při startu session   | Když se hodiny mezi restarty vrátí zpět, nová session vypadá starší. Její zprávy se uloží do `events`, ale stav nemění, dokud hodiny starou hodnotu nepředběhnou. | NTP na zařízení nebo trvale uložený čítač session                                                                     |
+| čítače jsou kumulativní po session                    | Jednotlivé přírůstky a součet přes všechny session ve stavu nejsou.                                                                                               | spočítat z `events` nebo souhrnná kolekce po session                                                                  |
+| žádné sériové zpracování na zařízení                  | Nelze použít přírůstkové události ani side effecty, které musí proběhnout v pořadí.                                                                               | `x-modulus-hash` exchange a single active consumer                                                                    |
+| standalone MongoDB s `w: 1`                           | Nejsou retryable writes, transakce ani change streams. Na replica setu by zápis s `w: 1` mohl být vrácen.                                                         | replica set a `MONGODB_WRITE_W=majority`, mění se jen konfigurace                                                     |
+| argumenty front deklarují aplikace                    | Změna argumentu, například delivery limitu, vyžaduje smazání fronty.                                                                                              | RabbitMQ policies                                                                                                     |
+| události se ukládají bez časového limitu              | Úložiště roste bez omezení.                                                                                                                                       | TTL index na `receivedAt`; pozdní duplicita po vypršení TTL vytvoří druhý dokument v `events`, stav ani alert nezmění |
+| frontu `telemetry.dead` nic nekonzumuje               | Zprávy v ní je nutné prohlížet ručně.                                                                                                                             | malý consumer, který je uloží k revizi                                                                                |
+| zařízení se mezi instance ingestu rozdělují náhodně   | Rozdělení není vyvážené a nezohledňuje zdraví instance. Instance, která není ready, dostává nová zařízení dál.                                                    | load balancer před ingestem, který přeposílá HTTP upgrade a má health checky                                          |
+| chybí autentizace zařízení a TLS                      | Kdokoli, kdo dosáhne na port, může posílat data za libovolné `deviceId`, a to nešifrovaně.                                                                        | TLS (`wss`) a autentizace v upgrade requestu, která spojení sváže s jedním `deviceId`                                 |
+| žádný limit počtu spojení ani rychlosti zařízení      | Záplava spojení vyčerpá file descriptory. Několik zařízení s velkým počtem zpráv zaplní okno instance a pozastaví ostatní.                                        | limit spojení, limit na adresu, token bucket na spojení                                                               |
+| pauzu consumera spouští počet pokusů jednoho handleru | Jedna zpráva, která pětkrát po sobě selže na přechodné chybě, pozastaví celou instanci na dobu jednoho pingu MongoDB a přeruší ostatní rozpracované handlery.     | okno chybovosti přes všechny handlery                                                                                 |
+| jeden zápis znamená jeden round trip, bez dávek       | Propustnost instance je zhruba prefetch děleno dobou zpracování jedné zprávy, která zahrnuje až tři round trips do MongoDB.                                       | `bulkWrite` po dávkách, až to ukáže měření                                                                            |
+| emulátor se škáluje počtem zařízení, ne replikami     | `--scale emulator=N` by vytvořil kolidující id zařízení.                                                                                                          | prefix z hostname kontejneru nebo jedna služba Compose na skupinu zařízení                                            |
+| jeden image pro tři aplikace, bez restart policy      | Každý image nese i ostatní dvě aplikace. Spadlý kontejner zůstane zastavený.                                                                                      | image na aplikaci (`pnpm deploy`); `restart: unless-stopped` nebo orchestrátor                                        |
+| náklady mechanismu konzistence nejsou změřené         | Tvrzení o minimálním dopadu na propustnost stojí na úvaze (jednodokumentové podmíněné operace, žádný zámek), ne na benchmarku.                                    | benchmark podmíněného zápisu proti nechráněnému zápisu na vyhrazeném hardwaru                                         |
+
+## Co by šlo při více času doplnit nebo řešit jinak
+
+1. **Potvrzování mezi ingestem a zařízením.** Uzavřelo by ztrátu přijatých zpráv při pádu ingestu.
+2. **Zabezpečení spojení zařízení.** TLS, autentizace při WebSocket upgrade, limity spojení a rychlosti.
+3. **Produkční infrastruktura.** Replica set MongoDB s `majority`, RabbitMQ cluster se třemi uzly, policies, load balancer před ingestem, orchestrátor a image na aplikaci.
+4. **Měření a monitoring.** Benchmark nákladů podmíněného zápisu a metriky pro monitoring místo souhrnných řádků v logu.
+5. **Dead-letter fronta a retence.** Consumer fronty `telemetry.dead` a TTL index na událostech.
+6. **Testy.** SIGTERM skutečnému procesu se zprávami v rozpracovaném stavu a ověřovací skript stacku v CI.
+7. **Rozšíření podle skutečné potřeby.** Směrování podle zařízení pro přírůstkové události a dávkové zápisy, pokud je ukáže měření.
+
+## Dokumentace návrhu
+
+| Kde                 | Obsah                                                                                                                           |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `docs/specs/`       | Návrhové dokumenty s tabulkou rozhodnutí, alternativami a kompromisy. Základem je `2026-09-11-telemetry-consistency-design.md`. |
+| `docs/plans/`       | Implementační plány s úkoly, ověřovacími příkazy a historií review.                                                             |
+| `TODO.md`           | Seřazený seznam kroků zadání a jejich stav.                                                                                     |
+| `.claude/README.md` | Jak se projekt vyvíjel s Claude Code: skills, review agenti a tok práce.                                                        |
+| `.env.example`      | Všechny proměnné prostředí všech služeb s výchozími hodnotami.                                                                  |
