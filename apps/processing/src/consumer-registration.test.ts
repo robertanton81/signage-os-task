@@ -332,6 +332,8 @@ describe('AmqpConsumer against a broker that stops answering', () => {
   });
 
   it('closes the channel and waits for its close-ok before the connection close, after the last acknowledgement', async () => {
+    // The order of the calls; that the connection close waits for the channel's close-ok, and that
+    // both closes share one budget, is proven by the case with `closeAnswers = false` below.
     const { consumer, lines } = await registeredConsumer();
     consumeCall(0).callback(delivery(exampleMessages.status, 1));
     await vi.advanceTimersByTimeAsync(1);
