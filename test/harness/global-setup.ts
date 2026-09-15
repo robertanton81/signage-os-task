@@ -3,13 +3,29 @@
 import type {} from 'vitest';
 import type { TestProject } from 'vitest/node';
 
-import { SERVICES, compose, composeInherit, parseComposeConfig, type TestStack } from './stack.js';
+import {
+  SERVICES,
+  compose,
+  composeInherit,
+  parseComposeConfig,
+  servicesWithStatus,
+  type TestStack,
+} from './stack.js';
 
 declare module 'vitest' {
   export interface ProvidedContext {
     stack: TestStack;
   }
 }
+
+/**
+ * The deadlines of the two Compose commands (`runInherited`): Vitest bounds no global setup. The
+ * `up`: on the first run Docker pulls both images (1.2 GB on disk together, measured) before the
+ * 120 s health wait starts, which a slow connection stretches to minutes; 3 s with the images
+ * present. The `down -v`: a container stop waits Docker's 10 s grace at most; 2 s measured.
+ */
+const STACK_UP_TIMEOUT_MS = 600_000;
+const STACK_DOWN_TIMEOUT_MS = 120_000;
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -25,15 +41,17 @@ function messageOf(error: unknown): string {
  * keeps it; a partial leftover counts as owned and goes away with what this run added.
  */
 export default async function setup(project: TestProject): Promise<() => Promise<void>> {
-  const running = (await compose(['ps', '--services', '--status', 'running'])).trim();
-  const owned = running.split('\n').filter(Boolean).length < SERVICES.length;
+  const running = await servicesWithStatus('running');
+  const owned = running.length < SERVICES.length;
   const teardown = async (): Promise<void> => {
     if (owned) {
-      await composeInherit(['down', '-v']);
+      await composeInherit(['down', '-v'], { timeoutMs: STACK_DOWN_TIMEOUT_MS });
     }
   };
   try {
-    await composeInherit(['up', '-d', '--wait', '--wait-timeout', '120']);
+    await composeInherit(['up', '-d', '--wait', '--wait-timeout', '120'], {
+      timeoutMs: STACK_UP_TIMEOUT_MS,
+    });
     project.provide('stack', parseComposeConfig(await compose(['config', '--format', 'json'])));
   } catch (error) {
     // A stack this run started must not outlive a failure of the steps after the `up`; the

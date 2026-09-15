@@ -32,6 +32,8 @@ export type TestStack = {
 const SETUP_COMMAND_TIMEOUT_MS = 180_000;
 /** `config --format json` is a few kilobytes; the bound only keeps a runaway output from ending the child. */
 const MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+/** How long a child that got SIGTERM at its deadline has to end before it gets SIGKILL. */
+const KILL_GRACE_MS = 5_000;
 
 export type ComposeOptions = {
   /** The test's own signal: an abort kills the Docker child and rejects at once (decision 12). */
@@ -53,20 +55,103 @@ export async function compose(
   return stdout;
 }
 
-/** The same with the terminal inherited, so an image pull on the first run shows its progress. */
-export function composeInherit(args: readonly string[]): Promise<void> {
+export type ServiceStatus = 'paused' | 'running';
+
+/**
+ * The services `docker compose ps --services --status <status>` lists: one name per line, and one
+ * empty line when there is none (measured), hence the filter.
+ */
+export async function servicesWithStatus(
+  status: ServiceStatus,
+  options: ComposeOptions = {},
+): Promise<string[]> {
+  const output = await compose(['ps', '--services', '--status', status], options);
+  return output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '');
+}
+
+export type DeadlineOptions = {
+  /** The bound of the whole command: at its end the child is ended and the call rejects. */
+  timeoutMs: number;
+  /** Between the SIGTERM at the deadline and the SIGKILL; default 5 s, shortened by the unit test. */
+  killGraceMs?: number;
+};
+
+/**
+ * The same with the terminal inherited, so an image pull on the first run shows its progress, and
+ * under a deadline (see `runInherited`).
+ */
+export function composeInherit(args: readonly string[], options: DeadlineOptions): Promise<void> {
+  return runInherited({
+    command: 'docker',
+    args: ['compose', '-f', COMPOSE_FILE, ...args],
+    label: `docker compose ${args.join(' ')}`,
+    ...options,
+  });
+}
+
+export type InheritedCommand = DeadlineOptions & {
+  command: string;
+  args: readonly string[];
+  /** Names the command in a rejection, e.g. `docker compose up -d --wait`. */
+  label: string;
+};
+
+/**
+ * `spawn` with `stdio: 'inherit'` under a deadline. Vitest bounds no global setup, so a Docker
+ * command that hangs (a daemon that stopped answering, a pull that stalls) would otherwise hold
+ * `pnpm test` forever. At the deadline the child gets SIGTERM, after `killGraceMs` SIGKILL, and
+ * the rejection names the command, the deadline, the signals sent and how the child ended.
+ */
+export function runInherited({
+  command,
+  args,
+  label,
+  timeoutMs,
+  killGraceMs = KILL_GRACE_MS,
+}: InheritedCommand): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn('docker', ['compose', '-f', COMPOSE_FILE, ...args], { stdio: 'inherit' });
-    child.once('error', reject);
-    child.once('close', (code, signal) => {
-      if (code === 0) {
-        resolve();
-        return;
+    const child = spawn(command, args, { stdio: 'inherit' });
+    const sent: NodeJS.Signals[] = [];
+    // A signal goes only to a child still alive (the guard of `spawnService`); after its exit the
+    // PID could already belong to another process.
+    const send = (signal: NodeJS.Signals): void => {
+      if (child.exitCode === null && child.signalCode === null) {
+        sent.push(signal);
+        child.kill(signal);
       }
-      const suffix = signal === null ? '' : ` after ${signal}`;
-      reject(
-        new Error(`docker compose ${args.join(' ')} ended with code ${String(code)}${suffix}`),
-      );
+    };
+    let escalation: NodeJS.Timeout | undefined;
+    const deadline = setTimeout(() => {
+      send('SIGTERM');
+      escalation = setTimeout(() => {
+        send('SIGKILL');
+      }, killGraceMs);
+    }, timeoutMs);
+    const settle = (): void => {
+      clearTimeout(deadline);
+      clearTimeout(escalation);
+    };
+    child.once('error', (error) => {
+      settle();
+      reject(error);
+    });
+    child.once('close', (code, signal) => {
+      settle();
+      const ending = signal === null ? `code ${String(code)}` : signal;
+      if (sent.length > 0) {
+        reject(
+          new Error(
+            `${label} did not end within ${String(timeoutMs)} ms; it was sent ${sent.join(', then ')} and ended with ${ending}`,
+          ),
+        );
+      } else if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`${label} ended with ${ending}`));
+      }
     });
   });
 }
@@ -146,7 +231,8 @@ const RECOVERY_WAIT_TIMEOUT_S = '40';
  * mutation, so a command aborted or killed mid-way is still recovered; each runs the mutation
  * under the test's signal and returns `recover()`, which runs the recovery until it has succeeded
  * once. Every recovery checks the service's state first, because it may follow a partly
- * successful attempt.
+ * successful attempt. That the recoveries run after a failed test, and what they leave behind,
+ * is proven by `test/integration/harness-recovery.test.ts` (H1–H7).
  */
 
 /**
@@ -156,12 +242,9 @@ const RECOVERY_WAIT_TIMEOUT_S = '40';
  */
 export async function pause(env: TestEnvironment, service: Service): Promise<Recover> {
   const recover = env.undo(async (signal) => {
-    const paused = await compose(['ps', '--services', '--status', 'paused'], {
-      signal,
-      timeoutMs: RECOVERY_COMMAND_TIMEOUT_MS,
-    });
-    if (paused.split('\n').includes(service)) {
-      await compose(['unpause', service], { signal, timeoutMs: RECOVERY_COMMAND_TIMEOUT_MS });
+    const options = { signal, timeoutMs: RECOVERY_COMMAND_TIMEOUT_MS };
+    if ((await servicesWithStatus('paused', options)).includes(service)) {
+      await compose(['unpause', service], options);
     }
   }, `unpause ${service}`);
   await env.track(
