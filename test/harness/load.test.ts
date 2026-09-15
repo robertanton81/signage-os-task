@@ -181,7 +181,7 @@ describe('generateLoad', () => {
   it('merges disjoint expectations and rejects a shared device', () => {
     const a = generateLoad({ ...SMALL, seed: 3, deviceIdPrefix: 'c10a' });
     const b = generateLoad({ ...SMALL, seed: 4, deviceIdPrefix: 'c10b' });
-    const merged = mergeExpected(a.expected, b.expected);
+    const merged = mergeExpected({ first: a.expected, second: b.expected });
     expect(merged.identities.size).toBe(200);
     expect(merged.alerts.size).toBe(20);
     expect(merged.sections.size).toBe(20);
@@ -190,7 +190,7 @@ describe('generateLoad', () => {
     expect(merged.sections.get(fromB)).toEqual(b.expected.sections.get(fromB));
     expect(merged.lastEvent.get(fromB)).toEqual(b.expected.lastEvent.get(fromB));
     expect(merged.duplicates).toBe(a.expected.duplicates + b.expected.duplicates);
-    expect(() => mergeExpected(a.expected, a.expected)).toThrow(
+    expect(() => mergeExpected({ first: a.expected, second: a.expected })).toThrow(
       /^mergeExpected: device c10a-\d{4} is in both expectations$/,
     );
   });

@@ -277,17 +277,17 @@ export function generateLoad({
 }
 
 /** Two expectations of disjoint device populations as one; a shared device is a programmer error. */
-export function mergeExpected(a: Expected, b: Expected): Expected {
-  for (const deviceId of b.sections.keys()) {
-    if (a.sections.has(deviceId)) {
+export function mergeExpected({ first, second }: { first: Expected; second: Expected }): Expected {
+  for (const deviceId of second.sections.keys()) {
+    if (first.sections.has(deviceId)) {
       throw new Error(`mergeExpected: device ${deviceId} is in both expectations`);
     }
   }
   return {
-    identities: new Set([...a.identities, ...b.identities]),
-    sections: new Map([...a.sections, ...b.sections]),
-    lastEvent: new Map([...a.lastEvent, ...b.lastEvent]),
-    duplicates: a.duplicates + b.duplicates,
-    alerts: new Set([...a.alerts, ...b.alerts]),
+    identities: new Set([...first.identities, ...second.identities]),
+    sections: new Map([...first.sections, ...second.sections]),
+    lastEvent: new Map([...first.lastEvent, ...second.lastEvent]),
+    duplicates: first.duplicates + second.duplicates,
+    alerts: new Set([...first.alerts, ...second.alerts]),
   };
 }

@@ -405,7 +405,7 @@ describe('processing consumer against RabbitMQ and MongoDB', () => {
     const shape = { devices: 10, messages: 100, hotShare: 0, duplicatePercent: 0, swapPercent: 0 };
     const batch1 = generateLoad({ ...shape, seed: 3, deviceIdPrefix: 'c10a' });
     const batch2 = generateLoad({ ...shape, seed: 4, deviceIdPrefix: 'c10b' });
-    const expected = mergeExpected(batch1.expected, batch2.expected);
+    const expected = mergeExpected({ first: batch1.expected, second: batch2.expected });
     // A check of the test's own arithmetic before anything is published.
     expect(expected.identities.size).toBe(200);
     expect(expected.alerts.size).toBe(20);
