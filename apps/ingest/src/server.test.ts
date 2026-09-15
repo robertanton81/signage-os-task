@@ -33,6 +33,13 @@ const BASE_CONFIG: IngestConfig = {
   SHUTDOWN_TIMEOUT_MS: 200,
 };
 
+/**
+ * Slack for a lower bound measured across a timer: Node makes no guarantee about the exact timing
+ * of a timer, and one measured by `performance.now()` can fire a fraction of a millisecond before
+ * its delay (299.94 ms for a 300 ms budget on the CI runner, 2026-09-15).
+ */
+const TIMER_TOLERANCE_MS = 5;
+
 type ConnectOptions = { path?: string; autoPong?: boolean };
 
 type Harness = {
@@ -589,7 +596,8 @@ describe('IngestServer', () => {
     publisher.setReady(true);
 
     expect(await drained).toEqual({ openConnections: 1, unconfirmed: 0 });
-    expect(performance.now() - started).toBeGreaterThanOrEqual(300);
+    // The ping would have ended the connection at about 100 ms (two intervals); the budget did.
+    expect(performance.now() - started).toBeGreaterThanOrEqual(300 - TIMER_TOLERANCE_MS);
     await connectionsOf(server, 0);
     expect(linesWith(logs, 'connection closed')[0]?.reason).toBe('shutdown');
   });
