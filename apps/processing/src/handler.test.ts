@@ -218,6 +218,26 @@ describe('processDelivery', () => {
     });
   });
 
+  it('absorbs a redelivered message the stopped instance had stored and applied as a stale duplicate', async () => {
+    // T70: a graceful stop can leave acknowledgements unapplied, so the next instance receives the
+    // message again with `redelivered: true`. Its event insert hits the unique index and the
+    // state guard finds the section at the message's own key: no write, no alert, one info line.
+    const { store, lines, run } = harness();
+    store.answer('insertEvent', { outcome: 'duplicate' });
+    store.answer('applyState', { outcome: 'ok', before: exampleState });
+
+    const result = await run(exampleMessages.metrics, { redelivered: true });
+
+    expect(methodsOf(store)).toEqual(['insertEvent', 'applyState']);
+    expect(result).toMatchObject({ verdict: 'ack', outcome: 'stale', duplicate: true });
+    expect(lines.find((line) => line.msg === 'delivery processed')).toMatchObject({
+      level: INFO,
+      outcome: 'stale',
+      duplicate: true,
+      redelivered: true,
+    });
+  });
+
   it('logs a sequence gap with the previous and the received seq', async () => {
     const { store, lines, run } = harness();
     const before: DeviceStateDocument = {
