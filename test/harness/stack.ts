@@ -215,7 +215,12 @@ function rabbitmqctl(args: readonly string[], options: ComposeOptions): Promise<
 
 /**
  * The memory alarm of the RabbitMQ publishers documentation (`set_vm_memory_high_watermark 0`,
- * 358 ms measured); the recovery restores the 4.3 default of 0.6, unconditionally and idempotently.
+ * 358 ms measured); the recovery restores the default of 0.6, unconditionally and idempotently.
+ * 0.6 is the documented default of the relative threshold
+ * (https://www.rabbitmq.com/docs/memory#relative-threshold, read 2026-09-15) and what a fresh
+ * `rabbitmq:4.3-management` container (4.3.5) reports for
+ * `rabbitmqctl eval 'application:get_env(rabbit, vm_memory_high_watermark).'`: `{ok,0.6}`,
+ * measured 2026-09-15.
  */
 export async function raiseMemoryAlarm(env: TestEnvironment): Promise<Recover> {
   const recover = env.undo(async (signal) => {
