@@ -218,7 +218,8 @@ export class AmqpConsumer {
   }
 
   /**
-   * Decision 20: cancel first, drain up to the budget, then abort what is left and close the link.
+   * Decision 20: cancel first, drain up to the budget, then abort what is left and close the link,
+   * channel first so that the last acknowledgements take effect (T70).
    * Resolves within `shutdownTimeoutMs + AMQP_CLOSE_TIMEOUT_MS` (the cancel's own bound runs
    * inside the drain, not after it), with the link closed unless the broker never answered the
    * close: then the socket is left to the heartbeat timeout, or to the process exit. Called once;
@@ -804,7 +805,13 @@ export class AmqpConsumer {
     );
   }
 
-  /** The `close_link` effect: closes the connection, which closes its channel (A12). */
+  /**
+   * The `close_link` effect: closes the channel and waits for its close-ok, then the connection,
+   * both within one `AMQP_CLOSE_TIMEOUT_MS` (decision 20, amended 2026-09-15). The broker applies a
+   * channel's frames in order, so the close-ok proves that every acknowledgement sent before it
+   * took effect; a connection close right after the last acknowledgement lost it, and the broker
+   * redelivered that message to the next instance (T70, measured with C11b).
+   */
   async #closeLink(): Promise<void> {
     const link = this.#link;
     this.#link = undefined;
@@ -814,16 +821,51 @@ export class AmqpConsumer {
     if (link === undefined) {
       return;
     }
-    await this.#closeHandle(link.handle);
+    const deadline = Date.now() + AMQP_CLOSE_TIMEOUT_MS;
+    await this.#closeChannel(link, deadline);
+    await this.#closeHandle(link.handle, deadline);
   }
 
-  /** Closes a model once; a later call for the same model returns the same promise. Never rejects. */
-  #closeHandle(handle: ModelHandle): Promise<void> {
-    handle.closing ??= this.#close(handle);
+  /** `channel.close()` and its close-ok, within what is left of the budget. Never rejects. */
+  async #closeChannel(link: Link, deadline: number): Promise<void> {
+    const fields = { generation: link.handle.generation };
+    // Through a microtask: a channel the broker closed already throws at once, and that close was
+    // the real event, so the throw is an outcome here, not an error.
+    const result = await settleWithin(
+      Promise.resolve().then(() => link.channel.close()),
+      remainingMs(deadline),
+    );
+    switch (result.outcome) {
+      case 'resolved':
+        this.#logger.debug({ ...fields, outcome: 'closed' }, 'amqp channel close');
+        return;
+      case 'rejected':
+        this.#logger.debug(
+          { ...fields, outcome: 'rejected', err: result.error },
+          'amqp channel close',
+        );
+        return;
+      case 'timed_out':
+        this.#logger.warn(
+          { ...fields, outcome: 'timed_out', timeoutMs: AMQP_CLOSE_TIMEOUT_MS },
+          'amqp channel close',
+        );
+        return;
+      default:
+        assertNever(result, 'close outcome');
+    }
+  }
+
+  /**
+   * Closes a model once, by `deadline` (default: a whole `AMQP_CLOSE_TIMEOUT_MS` from now); a later
+   * call for the same model returns the same promise. Never rejects.
+   */
+  #closeHandle(handle: ModelHandle, deadline?: number): Promise<void> {
+    handle.closing ??= this.#close(handle, deadline ?? Date.now() + AMQP_CLOSE_TIMEOUT_MS);
     return handle.closing;
   }
 
-  async #close(handle: ModelHandle): Promise<void> {
+  async #close(handle: ModelHandle, deadline: number): Promise<void> {
     // On a later turn, never inside an amqplib listener.
     await nextTurn();
     const fields = { generation: handle.generation };
@@ -831,7 +873,7 @@ export class AmqpConsumer {
       this.#logger.debug({ ...fields, outcome: 'skipped' }, 'amqp connection close');
       return;
     }
-    const result = await settleWithin(handle.model.close(), AMQP_CLOSE_TIMEOUT_MS);
+    const result = await settleWithin(handle.model.close(), remainingMs(deadline));
     switch (result.outcome) {
       case 'resolved':
         this.#logger.debug({ ...fields, outcome: 'closed' }, 'amqp connection close');
@@ -875,6 +917,11 @@ export class AmqpConsumer {
       this.#dispatch({ type: 'backoff_elapsed', generation });
     }, delayMs);
   }
+}
+
+/** What is left of a deadline, never negative: `settleWithin` with 0 stops waiting at once. */
+function remainingMs(deadline: number): number {
+  return Math.max(0, deadline - Date.now());
 }
 
 function nextTurn(): Promise<void> {

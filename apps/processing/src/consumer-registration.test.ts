@@ -23,7 +23,8 @@ import { TestStore } from './test-store.js';
 /**
  * The consumer against a broker that stops answering after the link is open: `stop()` while the
  * `basic.consume` reply is still pending, `stop()` while the cancel reply is, and a `basic.consume`
- * reply that never arrives at all. A real broker
+ * reply that never arrives at all; and the order of the closes at a stop (decision 20: the
+ * channel's close-ok before the connection close, T70) with the one budget they share. A real broker
  * cannot be asked to withhold one reply, and a TCP stand-in would have to speak the whole AMQP
  * handshake before it could stay silent, so these tests replace the amqplib module with a fake
  * that answers every call except the ones a test holds back. The store is the in-memory port of
@@ -79,7 +80,7 @@ const fake = vi.hoisted(() => {
     consumeIssued: Promise.withResolvers<void>(),
     /** `false` holds the cancel reply, as a broker that does not answer would. */
     cancelAnswers: true,
-    /** `false` holds the connection close the same way. */
+    /** `false` holds the channel close-ok and the connection close the same way. */
     closeAnswers: true,
     modelEvents: events(),
     channelEvents: events(),
@@ -120,6 +121,25 @@ const fake = vi.hoisted(() => {
         reply.resolve({});
       }
       return reply.promise;
+    },
+    close: (): Promise<void> => {
+      state.calls.push('closeChannel');
+      if (!state.closeAnswers) {
+        return new Promise<void>(() => undefined);
+      }
+      // amqplib 2.0.1 on the channel's close-ok: the channel's `toClosed` (`lib/channel.js`)
+      // rejects the replies still pending through `_rejectPending`, and its `close` event follows.
+      queueMicrotask(() => {
+        const closed = new Error('Channel closed');
+        for (const { reply } of state.consumes) {
+          reply.reject(closed);
+        }
+        for (const reply of state.cancels) {
+          reply.reject(closed);
+        }
+        state.channelEvents.emit('close');
+      });
+      return Promise.resolve();
     },
     ack: (): void => {
       state.calls.push('ack');
@@ -305,9 +325,33 @@ describe('AmqpConsumer against a broker that stops answering', () => {
     await vi.advanceTimersByTimeAsync(IMMEDIATE_MS);
     expect(stopped).toBe(true);
     expect(consumer.state.name).toBe('stopped');
-    // Decision 20: the cancel first, then the close; nothing was in flight, so no budget ran out.
-    expect(broker.calls).toEqual(['consume', 'cancel', 'close']);
+    // Decision 20: the cancel first, then the channel close and the connection close; nothing was
+    // in flight, so no budget ran out.
+    expect(broker.calls).toEqual(['consume', 'cancel', 'closeChannel', 'close']);
     expect(messages(lines)).not.toContain('shutdown drain ended at its budget');
+  });
+
+  it('closes the channel and waits for its close-ok before the connection close, after the last acknowledgement', async () => {
+    const { consumer, lines } = await registeredConsumer();
+    consumeCall(0).callback(delivery(exampleMessages.status, 1));
+    await vi.advanceTimersByTimeAsync(1);
+    expect(consumer.stats()).toMatchObject({ received: 1, acked: 1, inFlight: 0 });
+
+    let stopped = false;
+    void consumer.stop().then(() => {
+      stopped = true;
+    });
+    await vi.advanceTimersByTimeAsync(IMMEDIATE_MS);
+    expect(stopped).toBe(true);
+    // T70: the acknowledgement, the cancel, the channel's close-ok, then the connection close.
+    expect(broker.calls).toEqual(['consume', 'ack', 'cancel', 'closeChannel', 'close']);
+    const closes = lines
+      .filter((line) => line.msg.startsWith('amqp '))
+      .map((line) => [line.msg, line['outcome']]);
+    expect(closes).toEqual([
+      ['amqp channel close', 'closed'],
+      ['amqp connection close', 'closed'],
+    ]);
   });
 
   it('stop() resolves at the drain budget while the consume reply is pending and the close answers', async () => {
@@ -324,7 +368,7 @@ describe('AmqpConsumer against a broker that stops answering', () => {
 
     expect(consumer.state.name).toBe('stopped');
     // No registration to cancel; the link is closed without waiting for the reply.
-    expect(broker.calls).toEqual(['consume', 'close']);
+    expect(broker.calls).toEqual(['consume', 'closeChannel', 'close']);
     expect(messages(lines)).toContain('shutdown drain ended at its budget');
     expect(messages(lines)).not.toContain('shutdown ended before the link closed');
   });
@@ -333,25 +377,33 @@ describe('AmqpConsumer against a broker that stops answering', () => {
     const { consumer, lines, stopped } = await consumerStoppedWithoutAnyAnswer();
     const { generation } = consumer.state;
 
-    // At the drain budget the close is attempted at once, and stop() waits for it.
+    // At the drain budget the channel close is attempted at once, and stop() waits for it.
     await vi.advanceTimersByTimeAsync(SHUTDOWN_TIMEOUT_MS + IMMEDIATE_MS);
     expect(stopped()).toBe(false);
-    expect(broker.calls).toEqual(['consume', 'close']);
-    // The shutdown's bound runs from the drain budget; the close's own bound one immediate later.
+    expect(broker.calls).toEqual(['consume', 'closeChannel']);
+    // The shutdown's bound and the channel close's share of the close budget both run from the
+    // drain budget; the connection close follows with nothing left of the budget.
     await vi.advanceTimersByTimeAsync(AMQP_CLOSE_TIMEOUT_MS - IMMEDIATE_MS - 1);
     expect(stopped()).toBe(false);
+    expect(broker.calls).toEqual(['consume', 'closeChannel']);
     await vi.advanceTimersByTimeAsync(1 + IMMEDIATE_MS);
     expect(stopped()).toBe(true);
+    // The connection close is still attempted, one immediate after the channel close gave up; its
+    // empty bound runs out one immediate after that.
+    await vi.advanceTimersByTimeAsync(IMMEDIATE_MS);
+    expect(broker.calls).toEqual(['consume', 'closeChannel', 'close']);
 
     expect(consumer.state.name).toBe('stopped');
     const warnings = lines.filter((line) => line.level === WARN);
     expect(messages(warnings)).toEqual([
       'shutdown drain ended at its budget',
+      'amqp channel close',
       'shutdown ended before the link closed',
       'amqp connection close',
     ]);
-    expect(warnings[1]).toMatchObject({ generation, timeoutMs: AMQP_CLOSE_TIMEOUT_MS });
-    expect(warnings[2]).toMatchObject({ outcome: 'timed_out', timeoutMs: AMQP_CLOSE_TIMEOUT_MS });
+    expect(warnings[1]).toMatchObject({ outcome: 'timed_out', timeoutMs: AMQP_CLOSE_TIMEOUT_MS });
+    expect(warnings[2]).toMatchObject({ generation, timeoutMs: AMQP_CLOSE_TIMEOUT_MS });
+    expect(warnings[3]).toMatchObject({ outcome: 'timed_out', timeoutMs: AMQP_CLOSE_TIMEOUT_MS });
   });
 
   it('ignores the link ending after stop() gave up on the close', async () => {
@@ -365,7 +417,7 @@ describe('AmqpConsumer against a broker that stops answering', () => {
     broker.channelEvents.emit('close');
     broker.modelEvents.emit('close', new Error('Heartbeat timeout'));
     await vi.advanceTimersByTimeAsync(0);
-    expect(broker.calls).toEqual(['consume', 'close']);
+    expect(broker.calls).toEqual(['consume', 'closeChannel', 'close']);
     expect(consumer.state.name).toBe('stopped');
   });
 
@@ -394,14 +446,14 @@ describe('AmqpConsumer against a broker that stops answering', () => {
     });
     await vi.advanceTimersByTimeAsync(SHUTDOWN_TIMEOUT_MS + IMMEDIATE_MS);
     expect(consumer.stats()).toMatchObject({ inFlight: 0, abandoned: 1, acked: 0, rejected: 0 });
-    expect(broker.calls).toEqual(['consume', 'cancel', 'close']);
+    expect(broker.calls).toEqual(['consume', 'cancel', 'closeChannel']);
     expect(stopped).toBe(false);
     expect(messages(lines)).toContain('shutdown drain ended at its budget');
 
     await vi.advanceTimersByTimeAsync(AMQP_CLOSE_TIMEOUT_MS);
     expect(stopped).toBe(true);
     // Nothing was acknowledged through the void registration: the broker requeues the delivery.
-    expect(broker.calls).toEqual(['consume', 'cancel', 'close']);
+    expect(broker.calls).toEqual(['consume', 'cancel', 'closeChannel', 'close']);
     expect(consumer.state.name).toBe('stopped');
   });
 
