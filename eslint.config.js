@@ -76,5 +76,13 @@ export default defineConfig([
       globals: { Buffer: 'readonly', fetch: 'readonly', process: 'readonly', URL: 'readonly' },
     },
   },
+  {
+    // mongosh scripts run inside the MongoDB container, not under Node: name the shell globals
+    // they use.
+    files: ['scripts/**/*.js'],
+    languageOptions: {
+      globals: { db: 'readonly', print: 'readonly', quit: 'readonly' },
+    },
+  },
   prettier,
 ]);

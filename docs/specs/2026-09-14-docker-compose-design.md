@@ -412,6 +412,36 @@ criteria for the script, in addition to the three checks themselves:
   output; with `--scale`, `docker compose ps` shows two ingest and three processing containers and
   both scale-only checks report.
 
+**Amendment of 2026-09-15 (decision 25, the result check):** `compose-check.mjs` proves that data
+arrives and that the replicas share the work, but not that the stored result is correct, and the
+README gave a reviewer no way to check that by hand. `scripts/state-check.js` fills the gap. It is
+a mongosh script, fed to `mongosh` inside the MongoDB container through standard input, so the
+credentials come from the container's environment as in check 3 above. It runs four read-only
+checks. (1) The `identity_unique` index is unique and its key is exactly
+`{ deviceId: 1, sessionId: 1, seq: 1 }`. (2) No `(deviceId, sessionId, seq)` is stored twice.
+(3) Every `device_state` section equals the newest stored event of its type by
+`(sessionId, seq)`: same key, same `occurredAt`, the event's payload field by field and no other
+field. `receivedAt` is not compared, because either copy of a duplicated message may write the
+section. (4) Every stored `error` diagnostic has an alert with its own identity, and the alert
+count equals the error-diagnostic count, so there is no other alert. It prints `PASS` or `FAIL` per
+check and exits 1 on a failure. It is valid only on a quiet system (emulator stopped,
+`telemetry.events` empty): while messages move, an event can be stored before its state write,
+which check 3 would report as a mismatch. The README asks for two empty readings 10 s apart,
+because `rabbitmqctl list_queues` reads a quorum queue's counts from a metric refreshed every 5 s
+(the `rabbit_quorum_queue.erl` entry in the CI follow-up plan's Research). It is a manual tool like
+`compose-check.mjs`, not part of `pnpm test` or CI: the integration tests already assert these
+properties against their own stack (P2–P6, C6), and running the script there would need a second
+way into the test database. Proven on 2026-09-15 in a throwaway `mongo:8.0`: a missing index, a
+unique index on the wrong key, a duplicate event, a stale key, a wrong value under the right key,
+an extra section field, a wrong `occurredAt`, a missing state document, a missing section, a
+missing alert, an extra alert, and an alert moved to a non-error event with the count unchanged
+each failed the intended check with exit 1, and the unchanged data passed with exit 0. On a
+separate project of this Compose file with 2 ingest and 3 processing replicas, 100 devices and all
+four chaos modes, the drained result passed with exit 0, and a planted fault failed with exit 1.
+The README shows the commands and the two Compose traps measured the same day: a variable written
+in front of a command applies to that command only, so the next `up` without it restores the
+default; and an `up` without `--scale` returns the scaled services to one replica.
+
 ### What this step does not change
 
 No file under `apps/` or `packages/` is touched. `.env.example` already documents every service
