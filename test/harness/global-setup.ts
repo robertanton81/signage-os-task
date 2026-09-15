@@ -26,9 +26,27 @@ declare module 'vitest' {
  */
 const STACK_UP_TIMEOUT_MS = 600_000;
 const STACK_DOWN_TIMEOUT_MS = 120_000;
+/** `logs` reads what Docker holds and returns; measured under a second, bounded like the rest. */
+const STACK_LOGS_TIMEOUT_MS = 30_000;
 
 function messageOf(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * The containers' last lines, to the inherited terminal, before the teardown removes them: a
+ * service that exits during the `--wait` is otherwise a bare `exited (1)` in the CI log, with the
+ * reason gone with the container (RabbitMQ on the GitHub runner, 2026-09-15). Diagnostic only, so
+ * a `logs` that fails is not allowed to hide the error that led here.
+ */
+async function printStackLogs(): Promise<void> {
+  try {
+    await composeInherit(['logs', '--no-color', '--tail', '200'], {
+      timeoutMs: STACK_LOGS_TIMEOUT_MS,
+    });
+  } catch {
+    // The original error is the one reported; a `logs` that failed adds nothing to it.
+  }
 }
 
 /**
@@ -56,6 +74,7 @@ export default async function setup(project: TestProject): Promise<() => Promise
   } catch (error) {
     // A stack this run started must not outlive a failure of the steps after the `up`; the
     // original error is the one reported, and a teardown that fails too is named next to it.
+    await printStackLogs();
     try {
       await teardown();
     } catch (teardownError) {

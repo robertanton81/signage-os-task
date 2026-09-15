@@ -380,6 +380,16 @@ but the configuration unreadable — the `catch` tears down what this run starte
 a Docker command that hangs — the deadline ends it and the setup or the teardown fails naming
 the command. The teardown runs the same `down -v` a developer would.
 
+**Amendment of 2026-09-15 (the containers' logs on a failed setup):** the `catch` first runs
+`docker compose logs --no-color --tail 200` to the inherited terminal, then the teardown. The
+reason: on the GitHub runner, `telemetry-test-rabbitmq-1 exited (1)` five seconds into the
+`--wait` in two attempts of one run, and the CI log held nothing but that line — the `down -v`
+had removed the container and its output with it. The `logs` call is bounded (30 s) and its own
+failure is swallowed, so it can never replace the error that led to it. Proven locally by a
+`docker compose create rabbitmq` followed by `docker update --memory 24m` and a test run: the
+`up` reports `exited (137)`, the logs print (MongoDB's lines; the killed VM had not written one
+yet, at 64 MB neither), the teardown removes both containers.
+
 ### The per-test environment (`test/harness/environment.ts`)
 
 ```ts
