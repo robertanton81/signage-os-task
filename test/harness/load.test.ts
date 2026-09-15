@@ -51,7 +51,7 @@ describe('generateLoad', () => {
       const identity = messageIdentity(message);
       if (seen.has(identity)) {
         adjacent += 1;
-        expect(sends[index - 1]).toBe(message);
+        expect(sends[index - 1]).toEqual(message);
       }
       seen.add(identity);
     });
@@ -86,6 +86,12 @@ describe('generateLoad', () => {
           swapped += 1;
         }
       });
+      // Every moved message belongs to exactly one pair of adjacent positions.
+      const moved = seqs.flatMap((seq, index) => (seq === index + 1 ? [] : [index]));
+      expect(moved.length % 2).toBe(0);
+      for (let pair = 0; pair < moved.length; pair += 2) {
+        expect(moved[pair + 1]).toBe((moved[pair] ?? -2) + 1);
+      }
     }
     expect(swapped).toBeGreaterThan(0);
     const ordered = generateLoad({ ...OPTIONS, swapPercent: 0, duplicatePercent: 0 });
@@ -120,7 +126,9 @@ describe('generateLoad', () => {
       const sections = expected.sections.get(deviceId);
       expect(sections).toBeDefined();
       for (const type of TYPES) {
-        const highest = Math.max(...stream.filter((m) => m.type === type).map((m) => m.seq));
+        const seqs = stream.filter((m) => m.type === type).map((m) => m.seq);
+        expect(seqs.length, `${deviceId} ${type}`).toBeGreaterThan(0);
+        const highest = Math.max(...seqs);
         expect(sections?.get(type)).toEqual({ sessionId: LOAD_SESSION_ID, seq: highest });
       }
       expect(expected.lastEvent.get(deviceId)).toEqual({
@@ -132,9 +140,26 @@ describe('generateLoad', () => {
 
   it('computes the expectation from the sends alone', () => {
     const { sends, expected } = generateLoad(OPTIONS);
-    expect(expectationOf(sends)).toEqual(expected);
-    // A message dropped on the way changes the oracle: a comparison against stored data could not see it.
-    expect(expectationOf(sends.slice(1)).identities.size).toBe(999);
+    // A message dropped on the way changes the oracle: a comparison against stored data could not
+    // see it. Metrics messages of one device keep their relative order (a swap exchanges two
+    // adjacent seqs, which are never both metrics), so the last one holds the section's key.
+    const deviceId = loadDeviceId('load', 1);
+    const metrics = streamOf(sends, deviceId).filter((m) => m.type === 'metrics');
+    const dropped = metrics.at(-1);
+    const previous = metrics.at(-2);
+    if (dropped === undefined || previous === undefined) {
+      throw new Error('fixture too small');
+    }
+    expect(expected.sections.get(deviceId)?.get('metrics')).toEqual({
+      sessionId: LOAD_SESSION_ID,
+      seq: dropped.seq,
+    });
+    const reduced = expectationOf(sends.filter((m) => m !== dropped));
+    expect(reduced.identities.size).toBe(expected.identities.size - 1);
+    expect(reduced.sections.get(deviceId)?.get('metrics')).toEqual({
+      sessionId: LOAD_SESSION_ID,
+      seq: previous.seq,
+    });
   });
 
   it('namespaces devices by prefix, not by seed', () => {
@@ -147,6 +172,12 @@ describe('generateLoad', () => {
     expect(new Set(sameIds.expected.sections.keys())).toEqual(new Set(a.expected.sections.keys()));
   });
 
+  it('rejects a load with fewer messages than devices', () => {
+    expect(() => generateLoad({ ...SMALL, devices: 10, messages: 5 })).toThrow(
+      /needs at least one device and one message per device/,
+    );
+  });
+
   it('merges disjoint expectations and rejects a shared device', () => {
     const a = generateLoad({ ...SMALL, seed: 3, deviceIdPrefix: 'c10a' });
     const b = generateLoad({ ...SMALL, seed: 4, deviceIdPrefix: 'c10b' });
@@ -155,6 +186,9 @@ describe('generateLoad', () => {
     expect(merged.alerts.size).toBe(20);
     expect(merged.sections.size).toBe(20);
     expect(merged.lastEvent.size).toBe(20);
+    const fromB = loadDeviceId('c10b', 1);
+    expect(merged.sections.get(fromB)).toEqual(b.expected.sections.get(fromB));
+    expect(merged.lastEvent.get(fromB)).toEqual(b.expected.lastEvent.get(fromB));
     expect(merged.duplicates).toBe(a.expected.duplicates + b.expected.duplicates);
     expect(() => mergeExpected(a.expected, a.expected)).toThrow(
       /^mergeExpected: device c10a-\d{4} is in both expectations$/,
