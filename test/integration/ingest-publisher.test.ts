@@ -231,6 +231,14 @@ describe('ingest publisher against RabbitMQ', () => {
     expect(await env.management.alarms()).toBe(503);
     // The duration of the fault, not a wait for an outcome: longer than two heartbeats (decision 13).
     await sleep(3_000, undefined, { signal: env.signal });
+    // A blocked connection is not a stalled one (ingest spec, decision 15): the hold outlasted the
+    // stall window and no stall recycle fired. A heartbeat-driven recycle would be legitimate.
+    expect(
+      ingest.logs.filter(
+        (line) =>
+          line.msg === 'publisher reconnect scheduled' && line['reason'] === 'confirm_stall',
+      ),
+    ).toEqual([]);
     await recover();
     await env.waitFor(() => ingest.publisher.isReady, {
       describe: () => `publisher ${JSON.stringify(ingest.publisher.state)}`,
