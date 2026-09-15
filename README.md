@@ -12,7 +12,7 @@ flowchart LR
   I -->|"publish s potvrzením brokeru"| Q[("RabbitMQ<br/>fronta telemetry.events")]
   Q -->|"doručení, ack až po zápisech"| P["processing × M"]
   Q -.->|"odmítnutá zpráva<br/>nebo 5 pokusů"| D[("fronta telemetry.dead")]
-  P -->|"3 idempotentní zápisy"| M[("MongoDB<br/>events · device_state · alerts")]
+  P -->|"až 3 idempotentní zápisy"| M[("MongoDB<br/>events · device_state · alerts")]
 ```
 
 - **Emulátor** udržuje spojení pro každé zařízení a posílá stav, metriky, kumulativní čítače a diagnostiku.
