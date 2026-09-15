@@ -39,7 +39,7 @@ import {
   type StartProcessingOptions,
 } from '../harness/services.js';
 import { pause, restart, stop } from '../harness/stack.js';
-import { WARN_LEVEL, byMsg, type LogLine } from '../harness/wait.js';
+import { WARN_LEVEL, byMsg } from '../harness/wait.js';
 
 /** The consumer's `AMQP_CLOSE_TIMEOUT_MS` and the store's default `MONGODB_TIMEOUT_MS`: terms of the shutdown bounds. */
 const AMQP_CLOSE_TIMEOUT_MS = 2_000;
@@ -532,38 +532,22 @@ describe('processing consumer against RabbitMQ and MongoDB', () => {
       shutdownTimeoutMs + AMQP_CLOSE_TIMEOUT_MS + MONGODB_TIMEOUT_MS + 2_000,
     );
     const b = await registeredProcessing(env, { hostname: 'b' });
-    // The broker redelivers the message(s) acknowledged right before the link closed (measured
-    // in the plan's probe, T70): b's count is 150 plus those, and each of them is a duplicate
-    // that a had already stored.
-    const redelivered = (): LogLine[] =>
-      b.logs.filter((line) => line.msg === 'delivery processed' && line['redelivered'] === true);
-    await env.waitFor(
-      async () => {
-        const stats = b.stats();
-        if (stats.acked !== 150 + redelivered().length || stats.inFlight !== 0) {
-          return false;
-        }
-        return (await queueDepth(env))?.ready === 0;
-      },
-      {
-        describe: () =>
-          `b ${JSON.stringify(b.stats())}, redelivered ${String(redelivered().length)}`,
-      },
-    );
+    // a's channel close-ok before its connection close makes the last acknowledgement stick (T70):
+    // b receives exactly the other 150 and nothing is redelivered.
+    await env.awaitAcked(b, 150);
 
     const [sa, sb] = [a.stats(), b.stats()];
-    const detail = `a ${JSON.stringify(sa)}, b ${JSON.stringify(sb)}, redelivered ${String(redelivered().length)}`;
-    // A stop that does not cancel first shows as `a.acked > 50`; one that does not wait for its
-    // handlers as `a.abandoned > 0` and redeliveries that are not duplicates.
+    const detail = `a ${JSON.stringify(sa)}, b ${JSON.stringify(sb)}`;
+    // A stop that does not cancel first shows as `a.acked > 50` and `b.received < 150`; one that
+    // does not wait for its handlers as `a.abandoned > 0` and `b.received === 200`; a connection
+    // close before the channel's close-ok as a `redelivered: true` delivery on b (measured, T70).
     expect(sa, detail).toMatchObject({ received: 50, acked: 50, abandoned: 0, failed: 0 });
     expect(a.logs.find(byMsg('shutdown drain ended at its budget'))).toBeUndefined();
-    expect(sb.received, detail).toBe(150 + redelivered().length);
-    expect(sb.failed, detail).toBe(0);
-    // Only acknowledgements of the one drain can be lost, and each redelivered message was stored by a.
-    expect(redelivered().length, detail).toBeLessThanOrEqual(50);
-    for (const line of redelivered()) {
-      expect(line, detail).toMatchObject({ outcome: 'stale', duplicate: true });
-    }
+    expect(sb, detail).toMatchObject({ received: 150, acked: 150, failed: 0 });
+    expect(
+      b.logs.filter((line) => line.msg === 'delivery processed' && line['redelivered'] === true),
+      detail,
+    ).toEqual([]);
     const events = await readEvents(env);
     expect(identitiesOf(events)).toEqual(expected.identities);
     expect(events).toHaveLength(200);
