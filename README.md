@@ -13,6 +13,10 @@ Technologie: Node.js 24, striktní TypeScript, pnpm monorepo, RabbitMQ 4.3, Mong
 - [Škálování](#škálování)
 - [Konfigurace emulátoru](#konfigurace-emulátoru)
 - [Testy](#testy)
+- [Metadata zpráv](#metadata-zpráv)
+- [Datový model](#datový-model)
+- [Pořadí, deduplikace, atomicita a race conditions](#pořadí-deduplikace-atomicita-a-race-conditions)
+- [Chování při selhání](#chování-při-selhání)
 
 ## Architektura a tok dat
 
@@ -257,3 +261,263 @@ Co testy nepokrývají:
 - Náklady mechanismu konzistence na propustnost nejsou změřené benchmarkem.
 - Žádný test nepošle SIGTERM skutečnému procesu, který právě zpracovává zprávy. Testy se samostatným procesem (I5, C11) posílají SIGTERM nečinné službě. Dokončení rozpracovaných zpráv při zastavení ověřuje C11b uvnitř testovacího procesu.
 - Ověřovací skript Docker Compose stacku v CI neběží.
+
+## Metadata zpráv
+
+Každá zpráva je jeden JSON objekt:
+
+```json
+{
+  "v": 1,
+  "deviceId": "dev-0001",
+  "sessionId": 1789481081072,
+  "seq": 31,
+  "occurredAt": 1789481102606,
+  "type": "metrics",
+  "payload": { "temperatureC": 87.19, "cpuPercent": 0.89, "ramPercent": 51.65 }
+}
+```
+
+| Pole               | Význam                                                          | Proč                                                                                                                                                   |
+| ------------------ | --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `v`                | verze kontraktu, nyní `1`                                       | nekompatibilní změnu kontraktu lze rozpoznat u každé zprávy                                                                                            |
+| `deviceId`         | id zařízení, 1–64 znaků `[A-Za-z0-9_-]`                         | určuje, čí stav zpráva mění; je první částí identity zprávy                                                                                            |
+| `sessionId`        | čas startu session zařízení v milisekundách od epochy           | po restartu zařízení začne `seq` znovu od 1, ale nová session má vyšší `sessionId`, takže její zprávy jsou novější; zařízení nemusí nic trvale ukládat |
+| `seq`              | pořadové číslo zprávy v session, od 1, o 1 vyšší u každé zprávy | logické pořadí vzniká na zařízení, ne podle pořadí příchodu; řada je souvislá, takže lze poznat mezeru                                                 |
+| `occurredAt`       | čas vzniku podle hodin zařízení v milisekundách                 | jen pro zobrazení a diagnostiku; o pořadí nerozhoduje, protože hodiny zařízení nejsou synchronizované a mohou skočit                                   |
+| `type` a `payload` | jeden ze čtyř typů událostí a jeho absolutní hodnoty            | viz níže                                                                                                                                               |
+
+- **Identita zprávy** je trojice `(deviceId, sessionId, seq)`, v textové podobě `dev-0001:1789481081072:31`. Vzniká na zařízení. Znovu odeslaná zpráva má proto stejnou identitu a deduplikace ji pozná. Žádné UUID se negeneruje.
+- **Klíč pořadí** je dvojice `(sessionId, seq)`. Porovnává se lexikograficky: nejdřív `sessionId`, při shodě `seq`.
+- **`sessionId` nesmí klesnout.** Emulátor ho v rámci jednoho běhu počítá jako `max(Date.now(), předchozí sessionId + 1)`, takže dvě session jednoho zařízení nikdy nesdílí stejnou hodnotu. Mezi běhy emulátoru ho určují hodiny, se kterými souvisí kompromis v sekci limitů.
+- **Ingest přidává** při publikaci AMQP property `messageId` s identitou v textové podobě, `timestamp` v sekundách a hlavičku `x-received-at` s časem přijetí v milisekundách. Processing čas přijetí ukládá jako `receivedAt`. Pro správnost výsledku potřeba nejsou.
+- **Schéma je striktní.** Neznámé klíče se odmítnou na každé úrovni. `sessionId` musí ležet mezi roky 2017 a 2099, takže hodiny v sekundách nebo nenastavené hodiny se odmítnou hned při validaci. TypeScript typy jsou odvozené ze zod schématu v `packages/shared`.
+
+Typy událostí:
+
+| `type`       | `payload`                                                     |
+| ------------ | ------------------------------------------------------------- |
+| `status`     | `state`: `online`, `degraded` nebo `offline`                  |
+| `metrics`    | `temperatureC`, `cpuPercent`, `ramPercent`                    |
+| `counters`   | `operationsTotal`, `uptimeMs`, kumulativně od začátku session |
+| `diagnostic` | `severity` (`info`, `warning`, `error`), `code`, `message`    |
+
+Každá zpráva nese celou aktuální hodnotu svého typu, nikdy rozdíl. Stejná zpráva použitá dvakrát dá stejný výsledek. Starší zprávu stačí zahodit. Ztracenou periodickou zprávu opraví další zpráva stejného typu. Čítače jsou kumulativní, takže duplicitní zpráva nemůže čítač zvýšit dvakrát. Processing nikdy nesčítá, jen uloží nejnovější hodnotu.
+
+Co by se stalo bez těchto metadat:
+
+| Varianta                         | Důsledek                                                                                                                              |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| pořadí podle příchodu, bez `seq` | Starší zpráva, která přijde později, přepíše novější stav.                                                                            |
+| jen `seq`, bez `sessionId`       | Po restartu zařízení začne `seq` od 1. Nové zprávy vypadají starší než staré a stav zamrzne. Zařízení by muselo `seq` trvale ukládat. |
+| časové razítko místo `seq`       | Dvě události ve stejné milisekundě kolidují a posun hodin přehází pořadí.                                                             |
+| náhodné UUID jako identita       | Znovu odeslaná zpráva dostane nové UUID a deduplikací projde.                                                                         |
+| čítače jako přírůstky            | Duplicita zvýší čítač dvakrát a ztracená zpráva je trvalá chyba. Bylo by potřeba zpracování přesně jednou.                            |
+
+## Datový model
+
+### RabbitMQ
+
+| Objekt             | Druh     | Vlastnosti                                                                                                 |
+| ------------------ | -------- | ---------------------------------------------------------------------------------------------------------- |
+| `telemetry`        | exchange | `direct`, durable                                                                                          |
+| `telemetry.events` | fronta   | quorum, `x-delivery-limit: 5`, dead-letter exchange `telemetry.dlx`, vazba na `telemetry` s klíčem `event` |
+| `telemetry.dlx`    | exchange | `fanout`, durable                                                                                          |
+| `telemetry.dead`   | fronta   | quorum, vazba na `telemetry.dlx`                                                                           |
+
+Topologii deklarují obě služby při startu. Deklarace je idempotentní. Quorum fronta je typ fronty, který RabbitMQ doporučuje pro bezpečnost dat. Počet pokusů o doručení, který quorum fronta počítá, používá `x-delivery-limit`. Frontu `telemetry.dead` nic nekonzumuje. Zprávy v ní se prohlížejí v management UI.
+
+### MongoDB
+
+Databáze `telemetry` má tři kolekce. Processing při startu vytvoří unikátní index a consumera zaregistruje až potom, protože deduplikace unikátní index potřebuje.
+
+**`events`** obsahuje jeden dokument na každou unikátní událost. Je to úplná historie.
+
+```text
+{ _id: ObjectId, deviceId, sessionId, seq, type, occurredAt, receivedAt, processedAt, payload }
+
+unikátní index { deviceId: 1, sessionId: 1, seq: 1 }   deduplikační klíč; prefix slouží dotazům na jedno zařízení
+```
+
+**`device_state`** obsahuje aktuální stav: jeden dokument na zařízení s `_id` rovným `deviceId`. Každý typ události má vlastní sekci. Sekce nese hodnoty události svého typu s nejvyšším klíčem `(sessionId, seq)` a tento klíč jako vlastní watermark. Watermark je klíč pořadí události, ze které sekce pochází. Skutečný dokument z běžícího systému:
+
+```json
+{
+  "_id": "dev-0001",
+  "lastEvent": {
+    "sessionId": 1789481081072,
+    "seq": 31,
+    "type": "metrics",
+    "receivedAt": 1789481102607
+  },
+  "status": {
+    "state": "degraded",
+    "sessionId": 1789481081072,
+    "seq": 3,
+    "occurredAt": 1789481081522,
+    "receivedAt": 1789481081522
+  },
+  "metrics": {
+    "temperatureC": 87.19,
+    "cpuPercent": 0.89,
+    "ramPercent": 51.65,
+    "sessionId": 1789481081072,
+    "seq": 31,
+    "occurredAt": 1789481102606,
+    "receivedAt": 1789481102607
+  },
+  "counters": {
+    "operationsTotal": 50,
+    "uptimeMs": 19522,
+    "sessionId": 1789481081072,
+    "seq": 29,
+    "occurredAt": 1789481100594,
+    "receivedAt": 1789481100595
+  },
+  "diagnostic": {
+    "severity": "info",
+    "code": "E_NET_RETRY",
+    "message": "network request retried",
+    "sessionId": 1789481081072,
+    "seq": 24,
+    "occurredAt": 1789481096575,
+    "receivedAt": 1789481096578
+  }
+}
+```
+
+**`alerts`** obsahuje jeden dokument na diagnostiku se `severity: "error"`. `_id` je identita zprávy, například `dev-0001:1789481081072:20`. Dokument nese `deviceId`, `sessionId`, `seq`, `code`, `message`, `occurredAt` a `createdAt`. Alert se nikam neposílá. Je to odvozený business efekt, na kterém lze ukázat, že duplicita nevytvoří druhý alert.
+
+Proč má každá sekce vlastní watermark:
+
+- Typy událostí se mohou předběhnout. Když se uloží `metrics` se `seq` 5 a potom přijde `status` se `seq` 4, je to pořád nejnovější známý status. S jedním watermarkem na zařízení by se zahodil.
+- Watermark po sekcích dá správný konečný stav každé sekce. Celý dokument se přitom mění jednou atomickou operací.
+- `lastEvent` je watermark celého zařízení. Posune se jen u zprávy, která je novější než všechno uložené. Čtenář z něj pozná, k jakému okamžiku stav platí. Podle `now - lastEvent.receivedAt` pozná zařízení, které přestalo posílat.
+- Dokument záměrně nemá nepodmíněné `updatedAt`. Měnilo by se při každém zápisu, i u zastaralé zprávy.
+- Čítače patří k session, ze které pocházejí. První `counters` nové session sekci nahradí, takže čítače začínají v každé session od nuly. Součet přes session lze spočítat z `events`.
+
+## Pořadí, deduplikace, atomicita a race conditions
+
+Race condition je chyba, kdy výsledek závisí na tom, která ze souběžných operací doběhne dřív. V tomto systému hrozí všude, kde dvě zprávy stejného zařízení zpracovávají souběžně dva handlery, nebo kde stejná zpráva přijde dvakrát.
+
+### Pravidlo „novější“
+
+Aktuální stav zařízení je dokument v `device_state`. Pro každý typ události nese hodnoty z události s nejvyšším klíčem `(sessionId, seq)`. Novost určuje jen tento klíč, ne čas příchodu ani `occurredAt`.
+
+Událost typu `T` se použije pro sekci `T`, když sekce ještě neexistuje nebo když je klíč události lexikograficky větší než watermark sekce. Stejný klíč je duplicita a nepoužije se. Pravidlo má jedinou definici, funkci `isNewer` v `packages/shared`. Unit test ověřuje, že výraz pro MongoDB v processingu dává ve stejných případech stejný výsledek.
+
+### Atomický podmíněný zápis
+
+Porovnání neprobíhá v aplikaci po přečtení dokumentu. Vyhodnotí ho MongoDB uvnitř jedné operace nad jedním dokumentem. Operace je upsert, tedy update, který dokument vytvoří, když ještě neexistuje. Zjednodušeně podle `apps/processing/src/state-update.ts`:
+
+```js
+// Výraz „zpráva je novější než to, co je uložené na cestě path“.
+const newer = (path) => ({
+  $or: [
+    { $eq: [{ $type: `$${path}` }, 'missing'] }, // nic uloženého
+    { $lt: [`$${path}.sessionId`, sessionId] }, // uložená session je starší
+    { $and: [{ $eq: [`$${path}.sessionId`, sessionId] }, { $lt: [`$${path}.seq`, seq] }] },
+  ],
+});
+
+const before = await deviceState.findOneAndUpdate(
+  { _id: deviceId }, // jediná rovnost na unikátním _id
+  [
+    {
+      $set: {
+        [type]: { $cond: { if: newer(type), then: { $literal: section }, else: `$${type}` } },
+        lastEvent: {
+          $cond: { if: newer('lastEvent'), then: { $literal: lastEvent }, else: '$lastEvent' },
+        },
+      },
+    },
+  ],
+  { upsert: true, returnDocument: 'before' },
+);
+```
+
+Proč je to bezpečné:
+
+- MongoDB vyhodnotí `$cond` proti dokumentu tak, jak je v okamžiku zápisu, a výsledek zapíše atomicky. Mezi čtením a zápisem není žádné okno. Starší klíč nemůže přepsat novější ani při souběžných zápisech, protože pozdější zápis vidí sekci, kterou zapsal dřívější.
+- Filtr je jen `_id`, takže upsert nového zařízení nevytvoří druhý dokument. Když dvě první zprávy nového zařízení současně vkládají dokument, server kolizi převede na update. Kdyby přesto vrátil chybu duplicitního klíče (kód 11000), handler zápis jednou zopakuje. Dokument už existuje a rozhodne `$cond`.
+- Varianta s podmínkou ve filtru (`{ _id, 'metrics.seq': { $lt: seq } }` s upsertem) byla zamítnuta. U zastaralé zprávy filtr nic nenajde, upsert zkusí vložit druhý dokument se stejným `_id` a skončí chybou 11000. Každá zastaralá zpráva by stála chybu a další round trip (dotaz a odpověď).
+- `$literal` zabrání tomu, aby MongoDB četl text začínající znakem `$` (například `message` diagnostiky) jako cestu k poli.
+- Výsledek `created`, `applied` nebo `stale` určí processing z dokumentu před zápisem (`returnDocument: 'before'`) stejnou funkcí `isNewer`.
+
+### Deduplikace
+
+Deduplikace je v databázi, ne v paměti procesu. Duplicitní zpráva totiž může přijít do jiné instance, o minuty později nebo po restartu. Každý ze tří zápisů duplicitu odmítne sám:
+
+| Zápis                                        | Co udělá s duplicitou                                                                                        |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `events.insertOne`                           | unikátní index `(deviceId, sessionId, seq)` vrátí chybu 11000; handler to bere jako „už uloženo“ a pokračuje |
+| podmíněný zápis do `device_state`            | stejný klíč není novější, nic se nezmění (`stale`)                                                           |
+| `alerts.insertOne` (jen diagnostika `error`) | `_id` je identita zprávy, druhý insert vrátí chybu 11000                                                     |
+
+Každý efekt je idempotentní. Handler se proto před zápisem nemusí ptát, jestli zprávu už viděl. Události se ukládají bez časového limitu, takže deduplikace funguje i po dlouhé době.
+
+### Atomicita celého zpracování
+
+Atomicky musí proběhnout porovnání klíče se zápisem sekce stavu. To zajišťuje podmíněný zápis výše. Vložení události a vložení alertu jsou samostatné atomické operace.
+
+Handler jedné zprávy postupuje v pevném pořadí:
+
+1. ověří tělo zprávy: nejvýš 64 KiB, platné UTF-8 a schéma; chybné tělo odmítne do dead-letter fronty; chybějící nebo neplatnou hlavičku `x-received-at` nahradí vlastním časem a zapíše varování;
+2. `events.insertOne`;
+3. podmíněný zápis do `device_state`;
+4. u diagnostiky se `severity: "error"` `alerts.insertOne`;
+5. `basic.ack`.
+
+Každý zápis je jedna operace nad jedním dokumentem, a MongoDB ji proto provede atomicky. Celé zpracování není jedna transakce a nemusí být. Každý krok je idempotentní, takže pád mezi kroky opraví opakované doručení (redelivery). Hotové kroky se nezmění a chybějící se doplní. Transakce přes více dokumentů by potřebovala replica set, stála by víc na každou zprávu a nic by nepřidala.
+
+Zápisy používají write concern `{ w: MONGODB_WRITE_W, journal: true }`. Processing potvrdí zprávu brokeru, až když je zápis v journalu na disku. Pád MongoDB tak nesmaže zápis, který broker už považuje za hotový.
+
+### Paralelismus a pořadí v rámci zařízení
+
+Všechny zprávy jdou do jedné fronty a čte ji libovolný počet instancí. Zprávy se nesměrují podle zařízení. Dvě instance nebo dva handlery jedné instance tedy mohou zpracovávat dvě zprávy stejného zařízení současně. Nevadí to, protože výsledek neurčuje pořadí zpracování, ale porovnání klíčů při zápisu. Pozdější zápis buď má novější klíč a stav změní, nebo má starší či stejný klíč a nic nezmění. Není tu zámek, směrování ani koordinace mezi instancemi. Zastaralá zpráva stojí jeden update, který nic nezmění. Žádná zpráva nečeká na jinou.
+
+Zamítnutá alternativa je směrování podle zařízení: `x-modulus-hash` exchange rozdělí zprávy do front podle hashe id zařízení a každou frontu čte vždy jen jeden consumer (single active consumer). Dala by sériové zpracování na zařízení, které tento návrh nepotřebuje. Stála by ale propustnost. Zařízení s velkým počtem zpráv by vytížilo jednoho consumera, počet consumerů by omezoval počet front a změna počtu front by přeskupila zařízení. Je to cesta dál pro případ, že přibude typ události, který sériové zpracování opravdu potřebuje, například přírůstkové hodnoty.
+
+### Doručovací sémantika
+
+| Úsek                  | Sémantika       | Jak                                                                               |
+| --------------------- | --------------- | --------------------------------------------------------------------------------- |
+| zařízení a ingest     | fire-and-forget | zařízení nedostává potvrzení (vědomý kompromis, viz limity)                       |
+| ingest a RabbitMQ     | at-least-once   | publisher confirms; nepotvrzené zprávy ingest po obnovení spojení publikuje znovu |
+| RabbitMQ a processing | at-least-once   | ruční `basic.ack` až po zápisech do MongoDB                                       |
+| efekt v MongoDB       | přesně jednou   | idempotentní zápisy a deduplikace                                                 |
+
+At-least-once znamená, že se zpráva neztratí, ale může přijít vícekrát. Efekt přesně jednou znamená, že i vícekrát doručená zpráva změní data jen jednou. RabbitMQ a MongoDB nesdílejí transakci, takže doručení přesně jednou mezi nimi zaručit nelze. Návrh proto kombinuje at-least-once doručení s idempotentními zápisy.
+
+### Kde hrozí race conditions a jak jsou pokryté
+
+| Situace                                                                                                | Co by se mohlo pokazit                                                               | Řešení                                                                      | Test                            |
+| ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------- | ------------------------------- |
+| dvě instance zapisují dvě zprávy stejné sekce jednoho zařízení                                         | starší zpráva přepíše novější                                                        | porovnání klíčů uvnitř atomického zápisu                                    | C6                              |
+| souběžné handlery jedné instance zapisují zprávy stejného zařízení                                     | starší zpráva přepíše novější                                                        | porovnání klíčů uvnitř atomického zápisu                                    | P6                              |
+| první zprávy nového zařízení přijdou současně                                                          | dva dokumenty stavu nebo chyba duplicitního klíče                                    | filtr jen na `_id`; při chybě 11000 jedno opakování                         | P1, P6                          |
+| zpráva přijde mimo pořadí                                                                              | starší zpráva přepíše novější                                                        | watermark po sekcích                                                        | P3, P4                          |
+| restart zařízení a pak opožděná zpráva staré session                                                   | nová session vypadá starší, nebo stará zpráva přepíše novou                          | `sessionId` v klíči pořadí                                                  | P5                              |
+| duplicitní nebo znovu doručená zpráva                                                                  | druhá událost, druhý alert, čítač zvýšený dvakrát                                    | unikátní index, `_id` alertu, striktní porovnání, kumulativní čítače        | P2, P6, C6, C13, C14            |
+| pád mezi zápisy                                                                                        | chybí stav nebo alert                                                                | idempotentní kroky; redelivery chybějící doplní                             | C13, C14                        |
+| handler běží déle než consumer timeout brokeru (výchozí 30 minut) a broker zprávu doručí jiné instanci | dva handlery zapisují stejnou zprávu; potvrzení neplatného delivery tagu zavře kanál | idempotentní zápisy; handler po zrušení consumera skončí a zprávu nepotvrdí | unit testy handleru a consumeru |
+| řízené zastavení instance se zprávami v rozpracovaném stavu                                            | potvrzení se při zavření kanálu ztratí a zpráva přijde znovu                         | redelivery se zpracuje jako `duplicate` a `stale` bez efektu                | C11b                            |
+| restart nebo zamrznutí brokeru během publikace                                                         | nepotvrzené zprávy se ztratí                                                         | ingest je publikuje znovu                                                   | I2, I7                          |
+
+## Chování při selhání
+
+| Selhání                                         | Co se stane                                                                                                                                                                                                                                                                                                                                                              |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| zařízení ztratí spojení                         | Zařízení se připojuje znovu s exponenciálním backoffem s náhodným rozptylem: čekání je náhodné mezi 0 a hranicí, která roste od 500 ms do 10 s. Pokaždé znovu přeloží DNS a vybere adresu. Zprávy mezitím čekají v outboxu.                                                                                                                                              |
+| nevalidní zpráva od zařízení                    | Textovou zprávu, která není platný JSON nebo neodpovídá schématu, ingest zaloguje a zahodí. Spojení zůstává otevřené. Binární zprávu ingest odmítne a spojení zavře s kódem 1003. Když zpráva přesáhne 64 KiB nebo obsahuje neplatné UTF-8, knihovna `ws` spojení ukončí. Do fronty se nevalidní zpráva nedostane.                                                       |
+| pád instance ingestu                            | Její zařízení se připojí k jiné instanci. Zprávy, které ingest přijal a broker ještě nepotvrdil, se ztratí. Okno nepotvrzených zpráv instance (`INGEST_MAX_UNCONFIRMED_TOTAL`, výchozí 20 000) ztrátu přibližně omezuje, protože jedna přečtená dávka ho může překročit. Zprávy, které zařízení zapsalo do už mrtvého spojení, žádná hranice neomezuje.                  |
+| výpadek RabbitMQ                                | Ingest přestane číst ze socketů zařízení, hlásí not-ready, připojuje se znovu s backoffem a pak znovu publikuje nepotvrzené zprávy. Zaplní se TCP buffery a zařízení přestanou posílat (backpressure). Zprávy čekají v jejich outboxu. Processing se připojí znovu. Nepotvrzené zprávy broker mezitím vrátil do fronty.                                                  |
+| výpadek MongoDB                                 | Handler opakuje zápis s backoffem a zpráva zůstává nepotvrzená. Když jeden handler 5krát po sobě selže na přechodné chybě, instance pozastaví consumera. Ostatní rozpracované handlery přeruší a držené zprávy vrátí do fronty (`basic.nack` s requeue, bez zvýšení počtu pokusů). Hlásí not-ready a po úspěšném pingu MongoDB pokračuje. Fronta mezitím roste na disku. |
+| trvalá chyba zápisu                             | Chyba, která není přechodná, zprávu hned odmítne do `telemetry.dead`.                                                                                                                                                                                                                                                                                                    |
+| pád instance processingu                        | Broker nepotvrzené zprávy doručí jiné instanci. Idempotentní zápisy zajistí, že nevznikne druhý efekt.                                                                                                                                                                                                                                                                   |
+| zpráva ve frontě, kterou nelze zpracovat        | Processing ji odmítne bez vrácení do fronty (`basic.reject`). Broker ji přesune do `telemetry.dead`.                                                                                                                                                                                                                                                                     |
+| zpráva, jejíž zpracování opakovaně shodí proces | Broker ji po každém pádu vrátí do fronty a zvýší počet pokusů. Po pátém pokusu ji přesune do `telemetry.dead`.                                                                                                                                                                                                                                                           |
+| SIGTERM na ingest                               | Ingest přestane přijímat spojení, pošle zařízením close kód 1001 a čeká, až se spojení zavřou a broker potvrdí přijaté zprávy. Po `SHUTDOWN_TIMEOUT_MS` (výchozí 10 s) zbylá spojení ukončí a nepotvrzené zprávy se ztratí. Celé zastavení trvá nejvýš asi 12 s.                                                                                                         |
+| SIGTERM na processing                           | Processing zruší consumera, dokončí a potvrdí rozpracované zprávy. Po `SHUTDOWN_TIMEOUT_MS` zbylé handlery přeruší bez potvrzení a broker jejich zprávy doručí znovu. Celé zastavení včetně zavření spojení k MongoDB trvá nejvýš asi 17 s.                                                                                                                              |
+
+Každá operace se socketem, AMQP a MongoDB má timeout. Obě služby se po výpadku připojují znovu s backoffem a svůj stav hlásí přes `/readyz`.
