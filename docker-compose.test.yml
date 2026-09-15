@@ -1,0 +1,48 @@
+# Integration-test stack (TODO step 7): RabbitMQ and MongoDB only. The vitest `integration`
+# project starts it, runs the tests and removes it (test/harness/global-setup.ts).
+#
+#   pnpm test:integration                                      # starts it, runs the tests, removes it
+#   docker compose -f docker-compose.test.yml up -d --wait     # keep it running between runs
+#   docker compose -f docker-compose.test.yml down -v          # reset
+#
+# Separate from the development stack (docker-compose.yml) on purpose: its own project name, its
+# own host ports, no volumes, so both can run at the same time and every test run starts from an
+# empty broker and database. The credentials are the development placeholders, read through the
+# same variable names, so one .env governs both stacks. The three port names exist only here.
+name: telemetry-test
+
+services:
+  rabbitmq:
+    image: rabbitmq:4.3-management
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-telemetry}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-telemetry-dev}
+    ports:
+      # Fixed, not ephemeral: `docker compose restart` re-allocates an ephemeral host port, while
+      # the services under test keep the URL they started with. Loopback only, as in the
+      # development stack.
+      - '127.0.0.1:${TEST_AMQP_PORT:-5673}:5672'
+      - '127.0.0.1:${TEST_RABBITMQ_MANAGEMENT_PORT:-15673}:15672'
+    healthcheck:
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'check_port_connectivity']
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+      start_interval: 1s
+
+  mongodb:
+    image: mongo:8.0
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGODB_USER:-telemetry}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGODB_PASSWORD:-telemetry-dev}
+    ports:
+      - '127.0.0.1:${TEST_MONGODB_PORT:-27018}:27017'
+    healthcheck:
+      test: ['CMD', 'mongosh', '--quiet', '--eval', "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+      start_interval: 1s
+# No `volumes:` section: the images' own volumes are anonymous and `down -v` removes them.
