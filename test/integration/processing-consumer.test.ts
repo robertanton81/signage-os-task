@@ -39,11 +39,13 @@ import {
   type StartProcessingOptions,
 } from '../harness/services.js';
 import { pause, restart, stop } from '../harness/stack.js';
-import { WARN_LEVEL, byMsg } from '../harness/wait.js';
+import { WARN_LEVEL, byMsg, type LogLine } from '../harness/wait.js';
 
 /** The consumer's `AMQP_CLOSE_TIMEOUT_MS` and the store's default `MONGODB_TIMEOUT_MS`: terms of the shutdown bounds. */
 const AMQP_CLOSE_TIMEOUT_MS = 2_000;
 const MONGODB_TIMEOUT_MS = 5_000;
+/** The device of C11b's barrier message: distinct from the load's `load-NNNN` devices. */
+const BARRIER_DEVICE = 'c11b-barrier';
 
 let created: TestEnvironment | undefined;
 
@@ -493,7 +495,7 @@ describe('processing consumer against RabbitMQ and MongoDB', () => {
     );
   });
 
-  it('C11b a graceful drain with deliveries in flight: the held fifty are acknowledged, the next instance gets exactly the rest', async ({
+  it('C11b a graceful drain with deliveries in flight: the held fifty are acknowledged, the next instance gets the rest and at most their redeliveries as duplicates', async ({
     signal,
   }) => {
     const env = environment(signal);
@@ -532,25 +534,61 @@ describe('processing consumer against RabbitMQ and MongoDB', () => {
       shutdownTimeoutMs + AMQP_CLOSE_TIMEOUT_MS + MONGODB_TIMEOUT_MS + 2_000,
     );
     const b = await registeredProcessing(env, { hostname: 'b' });
-    // a's channel close-ok before its connection close makes the last acknowledgement stick (T70):
-    // b receives exactly the other 150 and nothing is redelivered.
-    await env.awaitAcked(b, 150);
+    // The handoff is at-least-once (T70): a's channel close-ok proves that the channel received
+    // the acknowledgements, not that the queue applied them (RabbitMQ 4.3.5's quorum-queue client
+    // stashes settles once 32 commands are pending and never flushes the stash at a channel
+    // close), so the queue can return some of a's fifty when a's channel goes down — none on a
+    // fast machine, 16 of 50 on the 2-vCPU CI runner — and b stores them as duplicates.
+    const redelivered = (): LogLine[] =>
+      b.logs.filter((line) => line.msg === 'delivery processed' && line['redelivered'] === true);
+    await env.awaitEndState(expected);
+    // The drain boundary (integration spec, decision 13 as amended), in two steps. (1) The queue
+    // keeps a's cancelled consumer in its consumer map until every delivery it held is settled
+    // or, on a's channel DOWN, returned; `checkQueue`'s consumer count is a live query of that
+    // map, so once it reads 1 (b alone) whatever a never settled has been returned, ahead of
+    // anything enqueued later. (2) A barrier published now is dispatched to b after every one of
+    // them, and b's channel dispatches in order — so once b has processed the barrier, a
+    // redelivered duplicate still on the wire has been dispatched too, and `inFlight === 0` then
+    // means every dispatched handler settled. The connection close-ok proves less (the reader
+    // forgets a channel at `channel_closing`, before the channel process exits), the database
+    // cannot see a duplicate, and no queue counter can say it either: for a quorum queue the
+    // `messages_unacknowledged` of `rabbitmqctl` is a 5 s tick metric.
+    let depth: QueueDepth | undefined;
+    await env.waitFor(
+      async () => {
+        depth = await queueDepth(env);
+        return depth?.consumers === 1;
+      },
+      { describe: () => `queue ${JSON.stringify(depth)}, b ${JSON.stringify(b.stats())}` },
+    );
+    const barrier = messages(BARRIER_DEVICE, SESSION_A).status(1);
+    await publisher.publish(barrier);
+    await b.logs.waitForLine(
+      (line) => line.msg === 'delivery processed' && line['deviceId'] === BARRIER_DEVICE,
+    );
+    await env.waitFor(() => b.stats().inFlight === 0, {
+      describe: () => `b ${JSON.stringify(b.stats())}`,
+    });
 
     const [sa, sb] = [a.stats(), b.stats()];
-    const detail = `a ${JSON.stringify(sa)}, b ${JSON.stringify(sb)}`;
-    // A stop that does not cancel first shows as `a.acked > 50` and `b.received < 150`; one that
-    // does not wait for its handlers as `a.abandoned > 0` and `b.received === 200`; a connection
-    // close before the channel's close-ok as a `redelivered: true` delivery on b (measured, T70).
+    const n = redelivered().length;
+    const detail = `a ${JSON.stringify(sa)}, b ${JSON.stringify(sb)}, redelivered ${String(n)}`;
+    // A stop that does not cancel first shows as `a.acked > 50` and `b.received < 151`; one that
+    // does not wait for its handlers as `a.abandoned > 0` and redeliveries that are not duplicates.
     expect(sa, detail).toMatchObject({ received: 50, acked: 50, abandoned: 0, failed: 0 });
     expect(a.logs.find(byMsg('shutdown drain ended at its budget'))).toBeUndefined();
-    expect(sb, detail).toMatchObject({ received: 150, acked: 150, failed: 0 });
-    expect(
-      b.logs.filter((line) => line.msg === 'delivery processed' && line['redelivered'] === true),
-      detail,
-    ).toEqual([]);
+    // The other 150, the barrier, and the redeliveries.
+    expect(sb, detail).toMatchObject({ received: 151 + n, acked: 151 + n, failed: 0 });
+    // Only acknowledgements of the one drain can be lost, and a had stored each redelivered message.
+    expect(n, detail).toBeLessThanOrEqual(50);
+    for (const line of redelivered()) {
+      expect(line, detail).toMatchObject({ outcome: 'stale', duplicate: true });
+    }
     const events = await readEvents(env);
-    expect(identitiesOf(events)).toEqual(expected.identities);
-    expect(events).toHaveLength(200);
+    expect(identitiesOf(events)).toEqual(
+      new Set([...expected.identities, messageIdentity(barrier)]),
+    );
+    expect(events).toHaveLength(201);
     expect(new Set((await readAlerts(env)).map((alert) => alert._id))).toEqual(expected.alerts);
     expect(await stateMismatches(env, expected)).toEqual([]);
     expect((await queueDepth(env))?.ready).toBe(0);
