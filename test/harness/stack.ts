@@ -2,6 +2,8 @@ import { execFile as execFileCallback, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
+import type { Recover, TestEnvironment } from './environment.js';
+
 const execFile = promisify(execFileCallback);
 
 /**
@@ -129,4 +131,104 @@ function variable({ name, service }: NamedService, key: string): string {
     throw new Error(`docker compose config: service ${name} has no ${key}`);
   }
   return value;
+}
+
+/** Ceilings for the sub-second fault commands; the test's own signal is the real bound (decision 12). */
+const FAULT_COMMAND_TIMEOUT_MS = 10_000;
+/** A container stop waits for its process (Docker's 10 s grace); `restart` plus its `up --wait` ran in 4 s. */
+const STOP_OR_RESTART_TIMEOUT_MS = 20_000;
+/** A recovery's own bound inside `dispose()`, under the 60 s hook budget. */
+const RECOVERY_COMMAND_TIMEOUT_MS = 50_000;
+const RECOVERY_WAIT_TIMEOUT_S = '40';
+
+/**
+ * The fault helpers of decision 12. Each registers its recovery on `env.undo` BEFORE it issues the
+ * mutation, so a command aborted or killed mid-way is still recovered; each runs the mutation
+ * under the test's signal and returns `recover()`, which runs the recovery until it has succeeded
+ * once. Every recovery checks the service's state first, because it may follow a partly
+ * successful attempt.
+ */
+
+/**
+ * `docker compose pause <service>`. The recovery unpauses only a service that is still paused
+ * (`unpause` of a running container exits 1, measured) and is never followed by `up --wait`: a
+ * container reads `unhealthy` for about 10 s after an unpause, and `up --wait` fails fast then.
+ */
+export async function pause(env: TestEnvironment, service: Service): Promise<Recover> {
+  const recover = env.undo(async (signal) => {
+    const paused = await compose(['ps', '--services', '--status', 'paused'], {
+      signal,
+      timeoutMs: RECOVERY_COMMAND_TIMEOUT_MS,
+    });
+    if (paused.split('\n').includes(service)) {
+      await compose(['unpause', service], { signal, timeoutMs: RECOVERY_COMMAND_TIMEOUT_MS });
+    }
+  }, `unpause ${service}`);
+  await env.track(
+    compose(['pause', service], { signal: env.signal, timeoutMs: FAULT_COMMAND_TIMEOUT_MS }),
+  );
+  return recover;
+}
+
+/** `docker compose stop <service>`; the recovery is `start` (exit 0 on a running service) and `up -d --wait`, which is its own state check. */
+export async function stop(env: TestEnvironment, service: Service): Promise<Recover> {
+  const recover = env.undo(async (signal) => {
+    await compose(['start', service], { signal, timeoutMs: RECOVERY_COMMAND_TIMEOUT_MS });
+    await compose(['up', '-d', '--wait', '--wait-timeout', RECOVERY_WAIT_TIMEOUT_S, service], {
+      signal,
+      timeoutMs: RECOVERY_COMMAND_TIMEOUT_MS,
+    });
+  }, `start ${service}`);
+  await env.track(
+    compose(['stop', service], { signal: env.signal, timeoutMs: STOP_OR_RESTART_TIMEOUT_MS }),
+  );
+  return recover;
+}
+
+/**
+ * `docker compose restart <service>` and then `up -d --wait` until it is healthy again (2.6 s after
+ * a restart, measured); the recovery is another `up -d --wait`, which also completes a restart that
+ * was cut off mid-way and returns in 0.6 s on a healthy stack.
+ */
+export async function restart(env: TestEnvironment, service: Service): Promise<Recover> {
+  const recover = env.undo(async (signal) => {
+    await compose(['up', '-d', '--wait', '--wait-timeout', RECOVERY_WAIT_TIMEOUT_S, service], {
+      signal,
+      timeoutMs: RECOVERY_COMMAND_TIMEOUT_MS,
+    });
+  }, `up ${service}`);
+  await env.track(
+    compose(['restart', service], { signal: env.signal, timeoutMs: STOP_OR_RESTART_TIMEOUT_MS }),
+  );
+  await env.track(
+    compose(['up', '-d', '--wait', '--wait-timeout', '15', service], {
+      signal: env.signal,
+      timeoutMs: STOP_OR_RESTART_TIMEOUT_MS,
+    }),
+  );
+  return recover;
+}
+
+function rabbitmqctl(args: readonly string[], options: ComposeOptions): Promise<string> {
+  return compose(['exec', '-T', 'rabbitmq', 'rabbitmqctl', ...args], options);
+}
+
+/**
+ * The memory alarm of the RabbitMQ publishers documentation (`set_vm_memory_high_watermark 0`,
+ * 358 ms measured); the recovery restores the 4.3 default of 0.6, unconditionally and idempotently.
+ */
+export async function raiseMemoryAlarm(env: TestEnvironment): Promise<Recover> {
+  const recover = env.undo(async (signal) => {
+    await rabbitmqctl(['set_vm_memory_high_watermark', '0.6'], {
+      signal,
+      timeoutMs: RECOVERY_COMMAND_TIMEOUT_MS,
+    });
+  }, 'reset memory alarm');
+  await env.track(
+    rabbitmqctl(['set_vm_memory_high_watermark', '0'], {
+      signal: env.signal,
+      timeoutMs: FAULT_COMMAND_TIMEOUT_MS,
+    }),
+  );
+  return recover;
 }
