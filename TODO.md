@@ -126,15 +126,17 @@ Hotovo 2026-09-15 podle `docs/specs/2026-09-14-integration-tests-design.md` a `d
 
 ## 8. Dokumentace (README.md)
 
-- [ ] Stručný popis architektury a toku dat.
-- [ ] Diagram architektury (textový diagram přímo v README stačí).
-- [ ] Návod na spuštění systému a testů. Uvést minimální verze na hostu: Docker Engine 25 a Docker Compose 2.20.2 (health checky používají `start_interval`; compose spec 2026-09-14, rozhodnutí 13); Node ani pnpm na hostu nejsou potřeba, ověřovací skript je čistý Node bez závislostí.
-- [ ] Konfigurace emulátoru – všechny env proměnné s výchozími hodnotami.
-- [ ] Jak spustit více instancí ingest a processing.
-- [ ] Datový model a zvolená metadata zpráv s odůvodněním.
-- [ ] Řešení race conditions, pořadí, deduplikace a atomicity.
-- [ ] Známé limity a vědomé kompromisy. Uvést, že přihlašovací údaje v `docker-compose.yml` jsou vývojové zástupné hodnoty (compose spec 2026-09-14, rozhodnutí 20 a 21): platí jen uvnitř sítě Compose, publikované porty 15672 a 27017 jsou vázané na loopback hostitele, hodnoty lze přepsat v `.env` a skener tajemství je hlásí záměrně; produkční nasazení dodává skutečné údaje z prostředí. Uvést také, že mezi zařízením a ingestem se zprávy nepotvrzují (kompromis T3): ztracená periodická zpráva se nahradí další, ztracená hranová diagnostika (`error` při přechodu do přehřátí) ne, takže její alert chybí až do dalšího výskytu stavu.
-- [ ] Co byste při více času doplnili nebo řešili jinak.
+Hotovo 2026-09-15: `README.md` (česky) vychází ze specifikací v `docs/specs/` a z kódu. Příkazy z README byly ověřeny proti vývojovému stacku: start jedním příkazem, `node scripts/compose-check.mjs` ve výchozím režimu i s `--scale --down` (vše PASS, zařízení rozdělená [5, 5] mezi dvě instance ingest), 200 zařízení, všechny čtyři chaos scénáře, dotazy do MongoDB, readiness, zastavení a reset testovacího stacku. `pnpm test` prošel: 953 testů ve 49 souborech.
+
+- [x] Stručný popis architektury a toku dat.
+- [x] Diagram architektury (textový diagram přímo v README stačí).
+- [x] Návod na spuštění systému a testů. Uvést minimální verze na hostu: Docker Engine 25 a Docker Compose 2.20.2 (health checky používají `start_interval`; compose spec 2026-09-14, rozhodnutí 13); Node ani pnpm na hostu nejsou potřeba, ověřovací skript je čistý Node bez závislostí.
+- [x] Konfigurace emulátoru – všechny env proměnné s výchozími hodnotami.
+- [x] Jak spustit více instancí ingest a processing.
+- [x] Datový model a zvolená metadata zpráv s odůvodněním.
+- [x] Řešení race conditions, pořadí, deduplikace a atomicity.
+- [x] Známé limity a vědomé kompromisy. Uvést, že přihlašovací údaje v `docker-compose.yml` jsou vývojové zástupné hodnoty (compose spec 2026-09-14, rozhodnutí 20 a 21): platí jen uvnitř sítě Compose, publikované porty 15672 a 27017 jsou vázané na loopback hostitele, hodnoty lze přepsat v `.env` a skener tajemství je hlásí záměrně; produkční nasazení dodává skutečné údaje z prostředí. Uvést také, že mezi zařízením a ingestem se zprávy nepotvrzují (kompromis T3): ztracená periodická zpráva se nahradí další, ztracená hranová diagnostika (`error` při přechodu do přehřátí) ne, takže její alert chybí až do dalšího výskytu stavu.
+- [x] Co byste při více času doplnili nebo řešili jinak.
 
 ## 9. Finální kontrola a odevzdání
 
