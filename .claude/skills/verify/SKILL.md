@@ -9,6 +9,8 @@ description: >
 
 # Verification Workflow
 
+Follow the shared tool compatibility rules in `CLAUDE.md`.
+
 **Announce:** "Using /verify to check the implementation against acceptance criteria."
 
 ## Purpose

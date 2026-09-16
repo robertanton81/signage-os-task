@@ -121,6 +121,14 @@ docker compose up -d --scale ingest=2 --scale processing=3   # horizontal scalin
 
 ## Workflow
 
+### Shared skills and tool compatibility
+
+`.claude/skills/` is the source of truth. Each folder in `.agents/skills/` is a relative symbolic link to its Claude counterpart. Edit the Claude files only. Both tools use the same workflow, review requirements and output rules.
+
+Claude Code uses the `Agent` tool, `subagent_type`, and Claude model names shown in the skills. In Codex, use the available subagent tool with the same reviewer role and inherit the current model; Claude model names are not Codex model identifiers. If a role is not available, give a general subagent the corresponding `.claude/agents/<role>.md` instructions. Never skip a required review because the tool API differs. `$ARGUMENTS` means the user's skill input; in Codex, read it from the invoking message.
+
+Discovery is documented by [Claude Code](https://code.claude.com/docs/en/skills) and [Codex](https://learn.chatgpt.com/docs/build-skills), which explicitly supports symbolic links to skill folders.
+
 ### Skills (`.claude/skills/`) — invoke with `/<name>`
 
 | Skill          | When                                                                                                 | Output                                    |

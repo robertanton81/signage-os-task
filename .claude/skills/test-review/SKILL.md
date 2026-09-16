@@ -11,6 +11,8 @@ description: >
 
 # Test Review Workflow
 
+Follow the shared tool compatibility rules in `CLAUDE.md`.
+
 **Announce:** "Using /test-review to audit test files for meaningfulness."
 
 ## Purpose
@@ -46,7 +48,7 @@ Prompt includes:
 - **Test files to review** — list of paths in scope.
 - **Source files in scope** — non-test files in the same diff (or, for an ad-hoc audit, the source files those tests import from).
 - **Diff context** — `git diff` for the test files. For a non-diff audit (the user asked to review existing tests not in any diff), provide the file contents instead and tell the reviewer it's an existence audit, not a change audit.
-- **Reviewer instructions** — the reviewer's own definition under `.claude/agents/test-quality-reviewer.md` is loaded automatically; you do not need to repeat its rules.
+- **Reviewer instructions** — use `.claude/agents/test-quality-reviewer.md`. Claude Code loads the role automatically; in Codex, follow the tool compatibility rules in `CLAUDE.md`.
 
 Capture the reviewer's report verbatim.
 

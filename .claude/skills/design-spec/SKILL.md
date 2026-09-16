@@ -8,6 +8,8 @@ description: >
 
 # Design Workflow
 
+Follow the shared tool compatibility rules in `CLAUDE.md`.
+
 **Announce:** "Using /design-spec to explore the problem and produce a spec."
 
 ## Scope

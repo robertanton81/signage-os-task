@@ -8,6 +8,8 @@ description: >
 
 # Planning Workflow
 
+Follow the shared tool compatibility rules in `CLAUDE.md`.
+
 **Announce:** "Using /plan to create a reviewed implementation plan."
 
 ## Golden Rule

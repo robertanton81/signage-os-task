@@ -9,6 +9,8 @@ description: >
 
 # Implementation Workflow
 
+Follow the shared tool compatibility rules in `CLAUDE.md`.
+
 **Announce:** "Using /implement to execute the approved plan."
 
 ## Golden Rule
