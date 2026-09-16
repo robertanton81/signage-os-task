@@ -21,13 +21,13 @@ This skill is for work where the right approach hasn't been decided. If the appr
 1. Read the user's request: $ARGUMENTS
 2. Read project context:
    - `CLAUDE.md` — stack, invariants, conventions
-   - `TODO.md` — which step this design serves and what is already done
+   - The current request and existing plan status — scope and completed work
    - `main-spec/Domácí úkol BE.pdf` — the assignment; its "Technické požadavky" section lists the questions every design must answer
    - `docs/specs/` — prior specs; the consistency spec (message metadata, freshness, dedup, atomicity) binds every later design once it exists
    - `apps/` and `packages/` — scan structure for what ships today
 3. Search the codebase for related code, existing patterns, and prior decisions.
 4. **Scope check:** If the request spans multiple independent subsystems (e.g. the socket protocol AND the state model), flag this immediately. Propose decomposition into separate design cycles. Each subsystem gets its own spec → plan → implement cycle.
-5. **TODO mapping:** Name the `TODO.md` section and items this design covers. If it fits none, flag it and ask whether it is in scope.
+5. **Scope mapping:** Name the user requirements this design covers. Ask before adding work outside the request.
 
 ## Phase 2: Surface Gray Areas
 
@@ -82,7 +82,7 @@ Write to `docs/specs/YYYY-MM-DD-<topic>-design.md`.
 
 **Date:** YYYY-MM-DD
 **Status:** Draft
-**TODO items:** [section and items from TODO.md]
+**Requirements:** [user requirements and assignment criteria covered]
 **Scope:** [Which packages/areas this affects]
 
 ## Problem
@@ -194,7 +194,7 @@ Print this block exactly:
 
 **Next step:** `/plan` — input doc: `docs/specs/<file>.md`
 
-**Session hygiene:** ✅ Safe to clear session — the spec is on disk and TODO.md points at the next step.
+**Session hygiene:** ✅ Safe to clear session — the spec is on disk and the next step is recorded above.
 ```
 
-If the spec completed any `TODO.md` item outright (typically the step 0 design decisions), tick those boxes in `TODO.md` and leave the edit **unstaged** so the user controls when it lands; say so in the block. Never tick an item the spec only partially covers.
+Record completed design decisions and remaining work in the spec. Leave the edit **unstaged** so the user controls when it lands; say so in the block. Never mark a requirement complete when the spec only partially covers it.

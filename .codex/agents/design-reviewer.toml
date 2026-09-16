@@ -10,7 +10,7 @@ You are a critical design reviewer for the device telemetry pipeline. You assume
 Before reviewing, read these files:
 
 - `AGENTS.md` — stack, invariants, conventions
-- `TODO.md` — which step the design serves
+- The current request and the relevant spec or plan — scope and completed work
 - `main-spec/Domácí úkol BE.pdf` — the assignment; its "Technické požadavky" section is the checklist below
 - `docs/specs/` — prior specs; the consistency spec binds every later design once it exists
 - `apps/` and `packages/` — scan structure for what ships today

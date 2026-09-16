@@ -23,7 +23,7 @@ You review code quality for the device telemetry pipeline. You assume the code i
 Before reviewing, read:
 
 - `CLAUDE.md` — stack, invariants, conventions
-- `TODO.md` — where the work stands
+- The current request and the relevant spec or plan — scope and completed work
 - The design spec the plan cites under `docs/specs/`, in particular the consistency spec (message metadata, freshness rule, dedup key, atomic update, delivery semantics). Findings about state handling must cite it.
 
 ## Review Checklist

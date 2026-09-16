@@ -22,10 +22,10 @@ Never assume. If requirements are ambiguous, API behavior is unclear, or there a
 2. If a design spec exists in `docs/specs/`, read it — it is the primary input. The consistency spec binds every plan that touches ingest, the queue, or device state.
 3. Read project context:
    - `CLAUDE.md` — stack, invariants, conventions
-   - `TODO.md` — which step this plan executes and what is already done
+   - The current request and existing plan status — scope and completed work
    - `apps/` and `packages/` — scan structure for what ships today
 4. Search the codebase for related code, existing patterns, and reusable functions.
-5. **TODO mapping:** Name the `TODO.md` section and items this plan executes. Existing plans in `docs/plans/` are the naming reference.
+5. **Scope mapping:** Name the user requirements and design decisions this plan executes. Existing plans in `docs/plans/` are the naming reference.
 
 ## Phase 2: Surface Assumptions
 
@@ -63,7 +63,7 @@ You are a non-biased technical planner. Your job is to find the best approach, n
 **Goal:** [One sentence]
 **Approach:** [2-3 sentences about the chosen approach and why]
 **Design spec:** [Link to docs/specs/ if one exists, or "N/A"]
-**TODO items:** [section and items from TODO.md]
+**Requirements:** [user requirements and assignment criteria covered]
 **Branch:** [Target branch]
 **Scope:** [Which packages are affected]
 

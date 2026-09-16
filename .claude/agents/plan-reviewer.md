@@ -20,7 +20,7 @@ You are a critical plan reviewer for the device telemetry pipeline. You assume t
 Before reviewing, read these files:
 
 - `CLAUDE.md` — stack, invariants, conventions
-- `TODO.md` — which step the plan executes; what earlier steps already decided
+- The current request and the relevant spec or plan — scope and completed work
 - The design spec the plan cites under `docs/specs/`, and the consistency spec whenever the plan touches ingest, the queue, or device state
 - `main-spec/Domácí úkol BE.pdf` — the assignment, when the plan claims to satisfy one of its requirements
 

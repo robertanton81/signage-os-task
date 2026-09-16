@@ -96,7 +96,7 @@ For each FAIL:
 
 ## Phase 5: Next Steps
 
-- **All PASS:** "All verification criteria met." Suggest ticking the corresponding `TODO.md` items if `/implement` Phase 6 has not run yet.
+- **All PASS:** "All verification criteria met." Suggest updating the plan task status if `/implement` Phase 6 has not run yet.
 - **Some FAIL:** "N criteria failed. Want me to fix them?" Do NOT fix automatically — let the user decide. Fixes go through the Debugging Protocol in `/implement` (root cause first).
 - **Spec mismatch:** Flag that the plan or the spec may need updating, not just the code.
 - **Known limits surfaced:** anything that passed only with a caveat goes to the README's "known limits and conscious compromises" list.
@@ -112,9 +112,9 @@ No new project state — verify confirms what code + plan already say. Print:
 ```
 **Output:** verification report above — pass evidence captured inline.
 
-**Next step:** the next unchecked item in TODO.md (or `/implement` Phase 6 cleanup if it hasn't run).
+**Next step:** the next user-requested task (or `/implement` Phase 6 cleanup if it has not run).
 
-**Session hygiene:** ✅ Safe to clear session — TODO.md is accurate; the report above is preserved in the transcript.
+**Session hygiene:** ✅ Safe to clear session — the plan status is accurate; the report above is preserved in the transcript.
 ```
 
 ### Some FAIL

@@ -22,7 +22,7 @@ Never assume. If a plan step is unclear, an API behaves differently than expecte
 1. Read the approved plan file. If no path was provided via $ARGUMENTS, ask the user.
 2. Read project context:
    - `CLAUDE.md` — stack, invariants, conventions
-   - `TODO.md` — which step this plan executes
+   - The approved plan — scope and completed work
    - The design spec the plan cites (the consistency spec whenever the plan touches state)
 3. **Build project snapshot** (reused by all subagents in Phase 2):
    ```bash
@@ -221,7 +221,7 @@ Do not push unless the user asks.
 
 After the user confirms the implementation is complete:
 
-1. **Tick the `TODO.md` items** this plan completed. Only items that are done and verified; partial items stay unchecked.
+1. **Update task completion in the plan.** Mark only work that is done and verified; partial tasks stay unchecked.
 
 2. **Add a `STATUS: SHIPPED` header to the plan file.** Plans are NOT moved to an `archived/` subdirectory; they stay in `docs/plans/` with a top-of-file blockquote that warns future readers not to re-execute and documents plan-vs-reality drift. Required structure:
 
@@ -243,7 +243,7 @@ After the user confirms the implementation is complete:
 
    The drift bullets are the load-bearing payload. Think: "what would a future plan author copy-pasting from this plan need to know to not waste a day?" Be specific (file paths, exact symbols) — vague entries like "fixed a typecheck issue" rot fast.
 
-3. **Commit both updates in a single commit** with subject `Mark <plan-name> shipped and update TODO`.
+3. **Commit the plan updates in a single commit** with subject `Mark <plan-name> shipped`.
 
 4. **Do NOT** move or rename the plan file. The path stays stable so references in commit messages remain valid.
 
@@ -260,7 +260,7 @@ Phase 6 needs this session's review findings to write good drift bullets. Print:
 
 **Next step:** `/verify` — input doc: `docs/plans/<plan-file>.md`. (Or run Phase 6 cleanup first, then `/verify`.)
 
-**Session hygiene:** ⏳ NOT safe to clear yet — Phase 6 (TODO tick + STATUS: SHIPPED header) needs the in-session review findings for the drift bullets. Run Phase 6 before clearing.
+**Session hygiene:** ⏳ NOT safe to clear yet — Phase 6 (Plan task status + STATUS: SHIPPED header) needs the in-session review findings for the drift bullets. Run Phase 6 before clearing.
 ```
 
 ### After Phase 6
@@ -270,9 +270,9 @@ Print:
 ```
 **Output:**
 - Commits `<first-sha>..<last-sha>` on `<branch>`
-- TODO tick + STATUS: SHIPPED header — committed in `<sha>`
+- Plan task status + STATUS: SHIPPED header — committed in `<sha>`
 
-**Next step:** `/verify` — input doc: `docs/plans/<plan-file>.md`. (Or the next unchecked item in TODO.md.)
+**Next step:** `/verify` — input doc: `docs/plans/<plan-file>.md`. (Or the next user-requested task.)
 
-**Session hygiene:** ✅ Safe to clear session — TODO.md and the plan header reflect the shipped state.
+**Session hygiene:** ✅ Safe to clear session — The plan tasks and header reflect the shipped state.
 ```

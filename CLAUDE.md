@@ -4,18 +4,18 @@ Take-home assignment (`main-spec/Domácí úkol BE.pdf`): a scalable pipeline th
 
 ## Where to start in a new session
 
-1. **`TODO.md`** — the ordered work ledger. The first unchecked item is the next action (the SessionStart hook prints it). Tick items only when they are done and verified.
-2. **`main-spec/Domácí úkol BE.pdf`** — the assignment. `TODO.md` mirrors it; when in doubt, the PDF wins.
-3. **`docs/specs/`** — design specs (`/design-spec` output). The consistency spec from TODO step 0 is the source of truth for message metadata, freshness, dedup and atomicity once written.
-4. **`docs/plans/`** — implementation plans (`/plan` output), carrying a `STATUS: SHIPPED` header once executed.
+1. **The current user request** — the scope of the next change.
+2. **`main-spec/Domácí úkol BE.pdf`** — the assignment; when in doubt, the PDF wins.
+3. **`docs/specs/`** — design decisions. `2026-09-11-telemetry-consistency-design.md` defines message metadata, freshness, deduplication and atomicity.
+4. **`docs/plans/`** — implementation plans, carrying a `STATUS: SHIPPED` header once executed. Do not re-execute shipped plans. Older plans and specs cite `TODO.md`, the work ledger removed before submission, and probe files under `.local/`, which is never committed; treat both as historical references.
 
 ## Stack
 
 **Fixed by the assignment (do not re-litigate):** Node.js, strictly typed TypeScript, pnpm monorepo, RabbitMQ, MongoDB, Docker Compose (development only), long-lived socket connections between devices and ingest, automated tests with at least part of them integration tests against real MongoDB and RabbitMQ instances.
 
-**To be decided and recorded in `docs/specs/` (TODO steps 0–2):** socket protocol and framing, validation library, AMQP client, MongoDB driver, test runner, logger, config loading. Once a library is chosen, pin its version and cite the docs it was verified against. Never pick or use a library from memory: look its documentation up for the version being pinned — `/find-docs` where that user-scope skill is installed, otherwise directly (Ref MCP → Context7 MCP → web fetch). Wherever a skill or agent in this repo says `/find-docs`, it means this lookup.
+**Recorded in `docs/specs/`:** socket protocol and framing, validation library, AMQP client, MongoDB driver, test runner, logger, config loading. Once a library is chosen, pin its version and cite the docs it was verified against. Never pick or use a library from memory: look its documentation up for the version being pinned — `/find-docs` where that user-scope skill is installed, otherwise directly (Ref MCP → Context7 MCP → web fetch). Wherever a skill or agent in this repo says `/find-docs`, it means this lookup.
 
-## Repo layout (target — created in TODO step 1)
+## Repo layout
 
 ```
 apps/emulator/      configurable number of emulated devices; socket clients; event generator
@@ -23,7 +23,7 @@ apps/ingest/        socket server; validates messages; publishes to RabbitMQ; st
 apps/processing/    RabbitMQ consumer; stores events and maintains current device state in MongoDB; horizontally scalable
 packages/shared/    message contract (types + validation schema), device-state type, queue/collection naming, config, logging
 docs/specs/         design specs (/design-spec)          docs/plans/   implementation plans (/plan)
-main-spec/          the assignment                  TODO.md       ordered work ledger
+main-spec/          the assignment
 ```
 
 Workspace packages are named `@telemetry/<dir>` (`@telemetry/ingest`, …). `apps/*` depend on `packages/*`, never the reverse; `packages/shared` holds the contract and cross-cutting helpers, not business decisions.
@@ -37,7 +37,7 @@ Workspace packages are named `@telemetry/<dir>` (`@telemetry/ingest`, …). `app
 5. **Minimal throughput cost.** Race-condition handling must not serialise the whole pipeline.
 6. **Both services scale horizontally**; ingest holds no per-device state.
 
-The mechanism (message metadata, freshness rule, dedup key, atomic update shape, delivery semantics) is decided in TODO step 0 and recorded as the first spec in `docs/specs/`. Until it exists, treat it as open and ask instead of assuming.
+The mechanism (message metadata, freshness rule, dedup key, atomic update shape, delivery semantics) is defined in `docs/specs/2026-09-11-telemetry-consistency-design.md`. Read it before changing state handling.
 
 ## Conventions (load-bearing)
 
@@ -109,7 +109,7 @@ When a procedure needs the user's own actions (console steps, pushes, decisions)
 
 Treat the user's stated view as open to correction. Say plainly where it is right, partly right or wrong, with reasoning and sources; steelman the other side before critiquing it; flag confirmation bias or anchoring when you see it. Praise for directness is not a reason to soften the next answer.
 
-## Commands (root, once TODO step 1 lands)
+## Commands (root)
 
 ```bash
 pnpm install --frozen-lockfile
